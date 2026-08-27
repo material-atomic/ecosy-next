@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-empty-object-type */
 import { NextRequest } from "next/server";
 import { Context, Memory } from "./context";
-import { InjectedContext, InjectMap, RouteHandler, RouteNextHandler, RoutePayload } from "./types";
+import { Injected, InjectMap, RouteHandler, RouteNextHandler, RoutePayload } from "./types";
 import { Exception } from "./exception";
 
 export type RouteFilter = (e: unknown, context: Context) => unknown;
@@ -60,11 +60,11 @@ class RouteBuilder<Injects extends InjectMap = {}> implements IRouteBuilder<Inje
 
         // 1. Run Middlewares
         for (const middleware of middlewares) {
-          await middleware(context as InjectedContext<Context, Injects>);
+          await middleware(context as Injected<Context, Injects>);
         }
 
         // 2. Run Main Handler
-        const result = await fn(context as InjectedContext<Context, Injects>);
+        const result = await fn(context as Injected<Context, Injects>);
 
         // 3. Format Response
         if (result instanceof Response) {

@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-empty-object-type */
-import { InjectedContext, InjectMap, MiddlewareFn, RoutePayload } from "./types";
+import { Injected, InjectMap, MiddlewareFn, RoutePayload } from "./types";
 import { NextRequest } from "next/server";
 import { Context } from "./context";
 import { Exception } from "./exception";
@@ -10,19 +10,19 @@ export type ProxyNextHandler = (req: NextRequest, payload: RoutePayload) => Prom
 
 export interface IProxyCallable<Injects extends InjectMap = {}> {
   (req: NextRequest, payload: RoutePayload): Promise<Response>;
-  use(...newMiddlewares: MiddlewareFn<InjectedContext<Context, Injects>>[]): IProxyCallable<Injects>;
-  proxy(fn?: MiddlewareFn<InjectedContext<Context, Injects>>): ProxyNextHandler;
+  use(...newMiddlewares: MiddlewareFn<Injected<Context, Injects>>[]): IProxyCallable<Injects>;
+  proxy(fn?: MiddlewareFn<Injected<Context, Injects>>): ProxyNextHandler;
 }
 
 function createProxyCallable<Injects extends InjectMap>(
   injects: Injects,
-  middlewares: MiddlewareFn<InjectedContext<Context, Injects>>[] = []
+  middlewares: MiddlewareFn<Injected<Context, Injects>>[] = []
 ): IProxyCallable<Injects> {
-  const runWithCatch = async (context: Context, fn?: MiddlewareFn<InjectedContext<Context, Injects>>) => {
+  const runWithCatch = async (context: Context, fn?: MiddlewareFn<Injected<Context, Injects>>) => {
     try {
       if (middlewares.length) {
         for (const middleware of middlewares) {
-          const result = await middleware(context as InjectedContext<Context, Injects>);
+          const result = await middleware(context as Injected<Context, Injects>);
           if (result instanceof Response) {
             return result;
           }
@@ -30,7 +30,7 @@ function createProxyCallable<Injects extends InjectMap>(
       }
 
       if (fn) {
-        const result = await fn(context as InjectedContext<Context, Injects>);
+        const result = await fn(context as Injected<Context, Injects>);
         if (result instanceof Response) {
           return result;
         }

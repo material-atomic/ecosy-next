@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-empty-object-type */
-import { InjectMap, InjectedContext } from "./types";
+import { InjectMap, Injected } from "./types";
 import type { Promisable } from "./types";
 
 const BOOTSTRAP_KEY = Symbol.for("SNIP_RENDER_BOOTSTRAP_STORE");
@@ -32,7 +32,7 @@ function set<T>(key: string, value: T): T {
 }
 
 export type BootstrapInitialize<Injects extends InjectMap = {}> = (
-  context: InjectedContext<BootstrapContext, Injects>
+  context: Injected<BootstrapContext, Injects>
 ) => Promisable<unknown>;
 
 function Bootstrap<Injects extends InjectMap = {}>(injects: Injects, ...fns: BootstrapInitialize<Injects>[]) {
@@ -63,7 +63,7 @@ function Bootstrap<Injects extends InjectMap = {}>(injects: Injects, ...fns: Boo
     constructor() {}
 
     async execute() {
-      const context = new BootstrapContext(BootstrapBuilder._descriptor.injects) as InjectedContext<BootstrapContext, Injects>;
+      const context = new BootstrapContext(BootstrapBuilder._descriptor.injects) as Injected<BootstrapContext, Injects>;
       for (const fn of BootstrapBuilder._descriptor.fns) {
         await fn(context);
       }

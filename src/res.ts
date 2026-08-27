@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { HttpResponse } from "@ecosy/core/http";
+import { HttpResponse } from "@ecosy/http";
 import { CONTENT_TYPES } from "./content-type";
 import { NextURL } from "next/dist/server/web/next-url";
 import { MiddlewareResponseInit } from "./types";
