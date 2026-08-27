@@ -1,5 +1,11 @@
-import { Promisable } from "@ecosy/core";
 import { NextRequest } from "next/server";
+
+export type LiteralObject<Keys extends PropertyKey = PropertyKey> =
+  | Record<Keys, unknown>
+  | { [K in Keys]: unknown }
+  | object;
+
+export type Promisable<Value> = Value | Promise<Value>;
 
 interface ModifiedRequest {
   headers?: Headers;

@@ -1,10 +1,8 @@
 import { NextRequest } from "next/server";
-import { InjectMap, MiddlewareResponseInit } from "./types";
+import { InjectMap, MiddlewareResponseInit, LiteralObject } from "./types";
 import { createUrl, UrlOptions } from "./url";
 import { Res } from "./res";
-import { fetcher } from "./fetcher";
 import { Cookie } from "./cookie";
-import { LiteralObject } from "@ecosy/core";
 import { NextURL } from "next/dist/server/web/next-url";
 
 const MEMORY_KEY = Symbol.for("@ECOSY/CONTEXT_MEMORY");
@@ -59,8 +57,6 @@ export class Context<Env extends LiteralObject = LiteralObject> {
   readonly url: URL;
   readonly init: Required<MiddlewareResponseInit>;
   readonly params: Record<string, string | string[]>;
-  readonly fetcher = fetcher;
-  readonly createUrl = createUrl;
 
   readonly res = Res;
   readonly cookie = Cookie;
@@ -109,7 +105,7 @@ export class Context<Env extends LiteralObject = LiteralObject> {
   }
 
   uri(options?: BaseUrlOptions) {
-    return this.createUrl({
+    return createUrl({
       ...options,
       base: this.baseUrl,
     });

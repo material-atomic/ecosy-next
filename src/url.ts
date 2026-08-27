@@ -1,6 +1,28 @@
-import { Serialize } from "@ecosy/core/serialize";
-import { flatten } from "@ecosy/core/utilities";
+import { flatten } from "./utils/flatten";
+import { get } from "./utils/get";
 
+function interpolate(
+  pattern: string,
+  params: Record<string, unknown> | Array<unknown> = {},
+): string {
+  if (
+    !pattern ||
+    typeof pattern !== "string" ||
+    !pattern.trim().length ||
+    !pattern.includes("{") ||
+    !pattern.includes("}")
+  ) {
+    return pattern;
+  }
+
+  return pattern.replace(/\{([a-zA-Z0-9_.-]+)\}/g, (match, variable) => {
+    const value = get(params, variable);
+    if (value === null || value === undefined || typeof value === "object") {
+      return "";
+    }
+    return String(value);
+  });
+}
 type Primitive = string | number | boolean | null | undefined;
 
 type SearchParams = {
@@ -82,5 +104,5 @@ export function createUrl(options: UrlOptions) {
     }
   }
 
-  return Serialize.interpolate(url.toString(), options.params ?? {});
+  return interpolate(url.toString(), options.params ?? {});
 }

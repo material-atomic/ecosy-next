@@ -1,4 +1,4 @@
-import { Promisable } from "@ecosy/core";
+import type { Promisable } from "./types";
 
 export type InstrumentHandler = () => Promisable<unknown>;
 export type InstrumentErrorHandler = (err: any, req: any, ctx: any) => Promisable<unknown>;

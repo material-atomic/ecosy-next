@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-empty-object-type */
 import { InjectMap, InjectedContext } from "./types";
-import { Promisable } from "@ecosy/core";
+import type { Promisable } from "./types";
 
 const BOOTSTRAP_KEY = Symbol.for("SNIP_RENDER_BOOTSTRAP_STORE");
 
