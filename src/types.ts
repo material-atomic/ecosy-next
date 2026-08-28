@@ -37,8 +37,8 @@ export interface MiddlewareFn<Context> {
 
 export interface RoutePayload {
   params: Promise<Record<string, string | string[]>>;
-  searchParams: Promise<Record<string, string | string[]>>;
+  searchParams?: Promise<Record<string, string | string[]>>;
 }
 
-export type RouteNextHandler = (req: NextRequest, payload: RoutePayload) => Promisable<Response>;
+export type RouteNextHandler = (req: any, payload: RoutePayload) => Promisable<Response>;
 export type RouteHandler<Context, Injects extends InjectMap> = (context: Injected<Context, Injects>) => Promisable<unknown>;

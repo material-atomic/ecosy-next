@@ -1,8 +1,16 @@
 import { NextResponse } from "next/server";
-import { HttpResponse } from "@ecosy/http";
 import { CONTENT_TYPES } from "./content-type";
 import { NextURL } from "next/dist/server/web/next-url";
 import { MiddlewareResponseInit } from "./types";
+
+export interface HttpResponse<T = unknown, E = unknown> {
+  success: boolean;
+  data: T;
+  status: number;
+  statusText: string;
+  headers: Record<string, string>;
+  error: E | null;
+}
 
 export class Res {
   static X_POWERED_BY = "Ecosy";

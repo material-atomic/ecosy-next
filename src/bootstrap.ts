@@ -35,52 +35,103 @@ export type BootstrapInitialize<Injects extends InjectMap = {}> = (
   context: Injected<BootstrapContext, Injects>
 ) => Promisable<unknown>;
 
-function Bootstrap<Injects extends InjectMap = {}>(injects: Injects, ...fns: BootstrapInitialize<Injects>[]) {
-  return class BootstrapBuilder {
-    public static _descriptor = {
-      injects,
-      fns
-    };
+export interface IBootstrapBuilder<Injects extends InjectMap = {}> {
+  push(fn: BootstrapInitialize<Injects>): IBootstrapBuilder<Injects>;
+  register(key: string, fn: BootstrapInitialize<Injects>): IBootstrapBuilder<Injects>;
+  execute(): Promise<void>;
+  start(fn?: (context: Injected<BootstrapContext, Injects>) => Promisable<void>): { init: () => Promise<void> };
+}
 
-    static push(fn: BootstrapInitialize<Injects>) {
-      return Bootstrap<Injects>(
-        BootstrapBuilder._descriptor.injects,
-        ...BootstrapBuilder._descriptor.fns,
-        fn
-      );
-    }
+class BootstrapBuilder<Injects extends InjectMap = {}> implements IBootstrapBuilder<Injects> {
+  constructor(
+    public readonly injects: Injects,
+    public readonly fns: readonly BootstrapInitialize<Injects>[] = []
+  ) {}
 
-    static register(key: string, fn: BootstrapInitialize<Injects>) {
-      return this.push(async (context) => {
-        const result = await fn(context);
-        if (result !== undefined) {
-          set(key, result);
-        }
-        return result;
-      });
-    }
+  push(fn: BootstrapInitialize<Injects>): IBootstrapBuilder<Injects> {
+    return new BootstrapBuilder(this.injects, [...this.fns, fn]);
+  }
 
-    constructor() {}
-
-    async execute() {
-      const context = new BootstrapContext(BootstrapBuilder._descriptor.injects) as Injected<BootstrapContext, Injects>;
-      for (const fn of BootstrapBuilder._descriptor.fns) {
-        await fn(context);
+  register(key: string, fn: BootstrapInitialize<Injects>): IBootstrapBuilder<Injects> {
+    return this.push(async (context) => {
+      const result = await fn(context);
+      if (result !== undefined) {
+        set(key, result);
       }
+      return result;
+    });
+  }
+
+  async execute(): Promise<void> {
+    console.log(`[BootstrapBuilder] execute() called. Total fns: ${this.fns.length}`);
+    const context = new BootstrapContext(this.injects) as Injected<BootstrapContext, Injects>;
+    for (const fn of this.fns) {
+      await fn(context);
     }
+    console.log(`[BootstrapBuilder] execute() finished.`);
+  }
+
+  start(fn?: (context: Injected<BootstrapContext, Injects>) => Promisable<void>): { init: () => Promise<void> } {
+    return {
+      init: async () => {
+        await this.execute();
+        if (fn) {
+          const context = new BootstrapContext(this.injects) as Injected<BootstrapContext, Injects>;
+          await fn(context);
+        }
+      }
+    };
   }
 }
 
-Bootstrap.get = function get<T>(key: string): T | undefined {
+export interface BootstrapFactory {
+  <Injects extends InjectMap = {}>(injects?: Injects): IBootstrapBuilder<Injects>;
+  get<T>(key: string): T | undefined;
+  boost(loader: () => Promise<any>): Promise<void>;
+}
+
+const BootstrapImpl = function <Injects extends InjectMap = {}>(injects?: Injects): IBootstrapBuilder<Injects> {
+  return new BootstrapBuilder<Injects>(injects ?? ({} as Injects));
+} as BootstrapFactory;
+
+BootstrapImpl.get = function get<T>(key: string): T | undefined {
   return _global[BOOTSTRAP_KEY].get(key) as T | undefined;
 };
 
-Bootstrap.push = function BootstrapPush(fn: BootstrapInitialize<{}>) {
-  return Bootstrap({}).push(fn);
+BootstrapImpl.boost = async function (loader: () => Promise<any>) {
+  const mod = await loader();
+  if (!mod) return;
+
+  if (typeof mod.init === "function") {
+    console.log("[Bootstrap.boost] Found top-level init()");
+    await mod.init();
+    return;
+  }
+
+  if (mod.default && typeof mod.default === "object") {
+    if (typeof mod.default.init === "function") {
+      console.log("[Bootstrap.boost] Found default.init()");
+      await mod.default.init();
+      return;
+    } else if (typeof mod.default.execute === "function") {
+      console.log("[Bootstrap.boost] Found default.execute()");
+      await mod.default.execute();
+      return;
+    }
+  }
+
+  for (const key of Object.keys(mod)) {
+    const exported = mod[key];
+    if (exported && typeof exported === "object") {
+      if (typeof exported.init === "function") {
+        console.log(`[Bootstrap.boost] Found exported.${key}.init()`);
+        await exported.init();
+      } else if (typeof exported.execute === "function" && typeof exported.register === "function") {
+        console.log(`[Bootstrap.boost] Found exported.${key}.execute()`);
+        await exported.execute();
+      }
+    }
+  }
 };
 
-Bootstrap.register = function BootstrapRegister(key: string, fn: BootstrapInitialize<{}>) {
-  return Bootstrap({}).register(key, fn);
-};
-
-export { Bootstrap };
+export const Bootstrap = BootstrapImpl;

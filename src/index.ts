@@ -11,3 +11,4 @@ export * from "./utils";
 export * from "./route";
 export * from "./bootstrap";
 export * from "./status";
+export * from "./handler";
