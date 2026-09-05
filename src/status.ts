@@ -1,3 +1,9 @@
+/**
+ * HTTP status codes by name.
+ *
+ * @example
+ * return ctx.res.json(body, HttpStatus.CREATED);
+ */
 export const HttpStatus = {
   CONTINUE: 100,
   SWITCHING_PROTOCOLS: 101,
@@ -63,8 +69,10 @@ export const HttpStatus = {
   NETWORK_AUTHENTICATION_REQUIRED: 511,
 } as const;
 
+/** Any value of {@link HttpStatus}. */
 export type HttpStatusCode = typeof HttpStatus[keyof typeof HttpStatus];
 
+/** Reason phrase for each code in {@link HttpStatus}. */
 export const HttpStatusText: Record<HttpStatusCode, string> = {
   100: "Continue",
   101: "Switching Protocols",

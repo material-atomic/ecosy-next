@@ -4,16 +4,42 @@ import { NextRequest } from "next/server";
 import { Context } from "./context";
 import { Exception } from "./exception";
 
+/* Importing this module anywhere marks the app as proxied. From then on a
+   Route whose request lacks `x-ecosyrequest-id` throws, which turns "this route
+   was reachable without middleware" into an error at the boundary — and means
+   the proxy's `matcher` must cover every route expected to work. */
 Context.activateProxy();
 
+/** A middleware in the shape Next expects to be exported from `proxy.ts`. */
 export type ProxyNextHandler = (req: NextRequest, payload: RoutePayload) => Promise<Response>;
 
+/** Callable directly as a Next middleware, and chainable. */
 export interface IProxyCallable<Injects extends InjectMap = {}> {
   (req: NextRequest, payload: RoutePayload): Promise<Response>;
+  /**
+   * Adds middlewares, run in order.
+   *
+   * @param newMiddlewares - Each receives the injected context.
+   * @returns A new callable; the receiver is left unchanged.
+   */
   use(...newMiddlewares: MiddlewareFn<Injected<Context, Injects>>[]): IProxyCallable<Injects>;
+  /**
+   * Closes the chain with a final middleware.
+   *
+   * @param fn - Runs after the ones added with `use`. Omit it to keep just those.
+   * @returns A Next middleware.
+   */
   proxy(fn?: MiddlewareFn<Injected<Context, Injects>>): ProxyNextHandler;
 }
 
+/**
+ * Builds the callable that runs the middlewares and converts a throw into a
+ * response — an {@link Exception} into its status, a thrown `Response` as-is,
+ * anything else into a logged 500.
+ *
+ * @param injects - Tokens to put on the context.
+ * @param middlewares - Middlewares accumulated so far.
+ */
 function createProxyCallable<Injects extends InjectMap>(
   injects: Injects,
   middlewares: MiddlewareFn<Injected<Context, Injects>>[] = []
@@ -99,6 +125,24 @@ function createProxyCallable<Injects extends InjectMap>(
   return callable;
 }
 
+/**
+ * Next middleware with the same dependency injection as a {@link Route}.
+ *
+ * A middleware returning a `Response` **stops the chain** and that response is
+ * sent; returning anything else continues to the next one. This differs from
+ * {@link Route}, where a middleware's return value is discarded.
+ *
+ * @example
+ * // src/proxy.ts
+ * export const proxy = Proxy({ tokens: Tokens, jwt: Jwt }).use(bearer);
+ *
+ * export const config = {
+ *   matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+ * };
+ *
+ * @param injects - Tokens to put on the context, or a middleware to run directly.
+ * @returns A callable middleware that also has `use` and `proxy`.
+ */
 function ProxyBase<Injects extends InjectMap = {}>(injects?: Injects): IProxyCallable<Injects>;
 function ProxyBase(handle: MiddlewareFn<Context>): ProxyNextHandler;
 function ProxyBase(
@@ -111,6 +155,7 @@ function ProxyBase(
   return createProxyCallable<InjectMap>((arg ?? {}) as InjectMap);
 }
 
+/** The callable {@link Proxy} plus its statics. */
 export interface ProxyFactory {
   <Injects extends InjectMap = {}>(injects?: Injects): IProxyCallable<Injects>;
   (handle: MiddlewareFn<Context>): ProxyNextHandler;
@@ -131,4 +176,5 @@ Object.defineProperties(ProxyImpl, {
   },
 });
 
+/** See {@link ProxyBase}. `Proxy.use(...)` starts a chain with no injected tokens. */
 export const Proxy = ProxyImpl as ProxyFactory;

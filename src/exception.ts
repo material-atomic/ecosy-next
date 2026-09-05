@@ -1,15 +1,35 @@
+/** One field-level problem, as produced by a schema validator. */
 export interface ErrorIssue {
   code?: string;
   path: (string | number)[];
   message: string;
 }
 
+/** The `error` payload carried by an {@link Exception} and echoed in the response envelope. */
 export interface ErrorShape {
   message?: string;
   issues?: ErrorIssue[];
   errorCode?: string;
 }
 
+/**
+ * Throw a status, get a response. {@link Route} catches these and turns them
+ * into the response envelope with the status they carry, so a handler can bail
+ * out anywhere without threading an error back to the caller.
+ *
+ * Note that this does **not** extend `Error` — there is no stack trace, and
+ * `err instanceof Error` is `false`. It is a value describing a response, not a
+ * fault.
+ *
+ * Each subclass fixes `status` and `statusText` and accepts either form:
+ *
+ * @example
+ * throw new NotFound("No such user");
+ * throw new BadRequest("Invalid body", { issues });
+ * throw new TooManyRequests({ message: "Slow down" }, { "retry-after": "60" });
+ *
+ * @template E - The shape of the `error` payload.
+ */
 export class Exception<E = ErrorShape> {
   constructor(
     public readonly status: number,
@@ -19,6 +39,7 @@ export class Exception<E = ErrorShape> {
   ) {}
 }
 
+/** Throws 500 Internal Server Error. Takes the same arguments as any {@link Exception} subclass. */
 export class InternalServer extends Exception<ErrorShape> {
   constructor(shape: ErrorShape, headers?: Record<string, string>);
   constructor(message?: string, otherShape?: Omit<ErrorShape, "message">, headers?: Record<string, string>);
@@ -38,6 +59,7 @@ export class InternalServer extends Exception<ErrorShape> {
   }
 }
 
+/** Throws 400 Bad Request. Takes the same arguments as any {@link Exception} subclass. */
 export class BadRequest extends Exception<ErrorShape> {
   constructor(shape: ErrorShape, headers?: Record<string, string>);
   constructor(message?: string, otherShape?: Omit<ErrorShape, "message">, headers?: Record<string, string>);
@@ -57,6 +79,7 @@ export class BadRequest extends Exception<ErrorShape> {
   }
 }
 
+/** Throws 401 Unauthorized. Takes the same arguments as any {@link Exception} subclass. */
 export class Unauthorized extends Exception<ErrorShape> {
   constructor(shape: ErrorShape, headers?: Record<string, string>);
   constructor(message?: string, otherShape?: Omit<ErrorShape, "message">, headers?: Record<string, string>);
@@ -76,6 +99,7 @@ export class Unauthorized extends Exception<ErrorShape> {
   }
 }
 
+/** Throws 403 Forbidden. Takes the same arguments as any {@link Exception} subclass. */
 export class Forbidden extends Exception<ErrorShape> {
   constructor(shape: ErrorShape, headers?: Record<string, string>);
   constructor(message?: string, otherShape?: Omit<ErrorShape, "message">, headers?: Record<string, string>);
@@ -95,6 +119,7 @@ export class Forbidden extends Exception<ErrorShape> {
   }
 }
 
+/** Throws 404 Not Found. Takes the same arguments as any {@link Exception} subclass. */
 export class NotFound extends Exception<ErrorShape> {
   constructor(shape: ErrorShape, headers?: Record<string, string>);
   constructor(message?: string, otherShape?: Omit<ErrorShape, "message">, headers?: Record<string, string>);
@@ -114,6 +139,7 @@ export class NotFound extends Exception<ErrorShape> {
   }
 }
 
+/** Throws 405 Method Not Allowed. Takes the same arguments as any {@link Exception} subclass. */
 export class MethodNotAllowed extends Exception<ErrorShape> {
   constructor(shape: ErrorShape, headers?: Record<string, string>);
   constructor(message?: string, otherShape?: Omit<ErrorShape, "message">, headers?: Record<string, string>);
@@ -133,6 +159,7 @@ export class MethodNotAllowed extends Exception<ErrorShape> {
   }
 }
 
+/** Throws 408 Request Timeout. Takes the same arguments as any {@link Exception} subclass. */
 export class RequestTimeout extends Exception<ErrorShape> {
   constructor(shape: ErrorShape, headers?: Record<string, string>);
   constructor(message?: string, otherShape?: Omit<ErrorShape, "message">, headers?: Record<string, string>);
@@ -152,6 +179,7 @@ export class RequestTimeout extends Exception<ErrorShape> {
   }
 }
 
+/** Throws 409 Conflict. Takes the same arguments as any {@link Exception} subclass. */
 export class Conflict extends Exception<ErrorShape> {
   constructor(shape: ErrorShape, headers?: Record<string, string>);
   constructor(message?: string, otherShape?: Omit<ErrorShape, "message">, headers?: Record<string, string>);
@@ -171,6 +199,7 @@ export class Conflict extends Exception<ErrorShape> {
   }
 }
 
+/** Throws 410 Gone. Takes the same arguments as any {@link Exception} subclass. */
 export class Gone extends Exception<ErrorShape> {
   constructor(shape: ErrorShape, headers?: Record<string, string>);
   constructor(message?: string, otherShape?: Omit<ErrorShape, "message">, headers?: Record<string, string>);
@@ -190,6 +219,7 @@ export class Gone extends Exception<ErrorShape> {
   }
 }
 
+/** Throws 413 Payload Too Large. Takes the same arguments as any {@link Exception} subclass. */
 export class PayloadTooLarge extends Exception<ErrorShape> {
   constructor(shape: ErrorShape, headers?: Record<string, string>);
   constructor(message?: string, otherShape?: Omit<ErrorShape, "message">, headers?: Record<string, string>);
@@ -209,6 +239,7 @@ export class PayloadTooLarge extends Exception<ErrorShape> {
   }
 }
 
+/** Throws 415 Unsupported Media Type. Takes the same arguments as any {@link Exception} subclass. */
 export class UnsupportedMediaType extends Exception<ErrorShape> {
   constructor(shape: ErrorShape, headers?: Record<string, string>);
   constructor(message?: string, otherShape?: Omit<ErrorShape, "message">, headers?: Record<string, string>);
@@ -228,6 +259,7 @@ export class UnsupportedMediaType extends Exception<ErrorShape> {
   }
 }
 
+/** Throws 422 Unprocessable Entity. Takes the same arguments as any {@link Exception} subclass. */
 export class UnprocessableEntity extends Exception<ErrorShape> {
   constructor(shape: ErrorShape, headers?: Record<string, string>);
   constructor(message?: string, otherShape?: Omit<ErrorShape, "message">, headers?: Record<string, string>);
@@ -247,6 +279,7 @@ export class UnprocessableEntity extends Exception<ErrorShape> {
   }
 }
 
+/** Throws 429 Too Many Requests. Takes the same arguments as any {@link Exception} subclass. */
 export class TooManyRequests extends Exception<ErrorShape> {
   constructor(shape: ErrorShape, headers?: Record<string, string>);
   constructor(message?: string, otherShape?: Omit<ErrorShape, "message">, headers?: Record<string, string>);
@@ -266,6 +299,7 @@ export class TooManyRequests extends Exception<ErrorShape> {
   }
 }
 
+/** Throws 501 Not Implemented. Takes the same arguments as any {@link Exception} subclass. */
 export class NotImplemented extends Exception<ErrorShape> {
   constructor(shape: ErrorShape, headers?: Record<string, string>);
   constructor(message?: string, otherShape?: Omit<ErrorShape, "message">, headers?: Record<string, string>);
@@ -285,6 +319,7 @@ export class NotImplemented extends Exception<ErrorShape> {
   }
 }
 
+/** Throws 502 Bad Gateway. Takes the same arguments as any {@link Exception} subclass. */
 export class BadGateway extends Exception<ErrorShape> {
   constructor(shape: ErrorShape, headers?: Record<string, string>);
   constructor(message?: string, otherShape?: Omit<ErrorShape, "message">, headers?: Record<string, string>);
@@ -304,6 +339,7 @@ export class BadGateway extends Exception<ErrorShape> {
   }
 }
 
+/** Throws 503 Service Unavailable. Takes the same arguments as any {@link Exception} subclass. */
 export class ServiceUnavailable extends Exception<ErrorShape> {
   constructor(shape: ErrorShape, headers?: Record<string, string>);
   constructor(message?: string, otherShape?: Omit<ErrorShape, "message">, headers?: Record<string, string>);
@@ -323,6 +359,7 @@ export class ServiceUnavailable extends Exception<ErrorShape> {
   }
 }
 
+/** Throws 504 Gateway Timeout. Takes the same arguments as any {@link Exception} subclass. */
 export class GatewayTimeout extends Exception<ErrorShape> {
   constructor(shape: ErrorShape, headers?: Record<string, string>);
   constructor(message?: string, otherShape?: Omit<ErrorShape, "message">, headers?: Record<string, string>);
@@ -342,6 +379,7 @@ export class GatewayTimeout extends Exception<ErrorShape> {
   }
 }
 
+/** Throws 507 Insufficient Storage. Takes the same arguments as any {@link Exception} subclass. */
 export class InsufficientStorage extends Exception<ErrorShape> {
   constructor(shape: ErrorShape, headers?: Record<string, string>);
   constructor(message?: string, otherShape?: Omit<ErrorShape, "message">, headers?: Record<string, string>);
@@ -361,6 +399,7 @@ export class InsufficientStorage extends Exception<ErrorShape> {
   }
 }
 
+/** Throws 508 Loop Detected. Takes the same arguments as any {@link Exception} subclass. */
 export class LoopDetected extends Exception<ErrorShape> {
   constructor(shape: ErrorShape, headers?: Record<string, string>);
   constructor(message?: string, otherShape?: Omit<ErrorShape, "message">, headers?: Record<string, string>);
@@ -380,6 +419,7 @@ export class LoopDetected extends Exception<ErrorShape> {
   }
 }
 
+/** Throws 510 Not Extended. Takes the same arguments as any {@link Exception} subclass. */
 export class NotExtended extends Exception<ErrorShape> {
   constructor(shape: ErrorShape, headers?: Record<string, string>);
   constructor(message?: string, otherShape?: Omit<ErrorShape, "message">, headers?: Record<string, string>);
@@ -399,6 +439,7 @@ export class NotExtended extends Exception<ErrorShape> {
   }
 }
 
+/** Throws 511 Network Authentication Required. Takes the same arguments as any {@link Exception} subclass. */
 export class NetworkAuthenticationRequired extends Exception<ErrorShape> {
   constructor(shape: ErrorShape, headers?: Record<string, string>);
   constructor(message?: string, otherShape?: Omit<ErrorShape, "message">, headers?: Record<string, string>);

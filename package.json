@@ -2,13 +2,23 @@
   "name": "@ecosy/next",
   "version": "1.0.0",
   "description": "Ecosy Next.js bindings",
-  "main": "dist/index.js",
+  "main": "src/index.ts",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
       "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
+      "default": "./src/index.ts"
+    },
+    "./inject": {
+      "source": "./src/inject.ts",
+      "types": "./dist/inject.d.ts",
+      "default": "./src/inject.ts"
+    },
+    "./jwt": {
+      "source": "./src/jwt.ts",
+      "types": "./dist/jwt.d.ts",
+      "default": "./src/jwt.ts"
     }
   },
   "license": "MIT",
@@ -25,12 +35,20 @@
   },
   "author": "material-atomic",
   "peerDependencies": {
-    "next": "^16.3.1"
+    "next": "^16.3.1",
+    "jsonwebtoken": "^9.0.3"
   },
   "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^26.2.0",
+    "jsonwebtoken": "^9.0.3",
     "next": "^16.3.1",
     "server-only": "^0.0.1",
     "typescript": "^7.0.2"
+  },
+  "peerDependenciesMeta": {
+    "jsonwebtoken": {
+      "optional": true
+    }
   }
 }

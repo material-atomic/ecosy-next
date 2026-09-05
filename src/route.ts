@@ -4,19 +4,95 @@ import { Context, Memory } from "./context";
 import { Injected, InjectMap, RouteHandler, RouteNextHandler, RoutePayload } from "./types";
 import { Exception } from "./exception";
 
+/**
+ * An error hook. Returning a value replaces the error that is then converted
+ * into a response; returning `undefined` leaves it alone.
+ */
 export type RouteFilter = (e: unknown, context: Context) => unknown;
 
+/** The chainable builder returned by {@link Route}. Every method returns a new builder. */
 export interface IRouteBuilder<Injects extends InjectMap = {}, Methods extends Record<string, RouteNextHandler> = {}> {
+  /**
+   * Adds middlewares, run in order before the handler.
+   *
+   * Their return value is **discarded** — throw to stop the chain. A middleware
+   * that wants to answer directly should throw a `Response`.
+   *
+   * @param newMiddlewares - Each receives the injected context.
+   * @returns A new builder; the receiver is left unchanged.
+   */
   use(...newMiddlewares: RouteHandler<Context, Injects>[]): IRouteBuilder<Injects, Methods>;
+  /**
+   * Sets an error hook for this route, run before the global {@link RouteFactory.error}.
+   *
+   * @param fn - Receives the error and the context.
+   * @returns A new builder; the receiver is left unchanged.
+   */
   filter(fn: RouteFilter): IRouteBuilder<Injects, Methods>;
+  /**
+   * Handles every method with one function.
+   *
+   * @param fn - The handler.
+   * @returns A Next route handler, to export under the method name.
+   * @throws If an HTTP method has already been registered on this builder.
+   */
   route(fn: RouteHandler<Context, Injects>): RouteNextHandler;
   
+  /**
+   * Handles GET requests.
+   *
+   * @param fn - The handler.
+   * @returns A new builder carrying `GET`, so the accumulated
+   * handlers can be destructured off it.
+   */
   get(fn: RouteHandler<Context, Injects>): Omit<IRouteBuilder<Injects, Methods & { GET: RouteNextHandler }>, "route"> & Methods & { GET: RouteNextHandler };
+  /**
+   * Handles POST requests.
+   *
+   * @param fn - The handler.
+   * @returns A new builder carrying `POST`, so the accumulated
+   * handlers can be destructured off it.
+   */
   post(fn: RouteHandler<Context, Injects>): Omit<IRouteBuilder<Injects, Methods & { POST: RouteNextHandler }>, "route"> & Methods & { POST: RouteNextHandler };
+  /**
+   * Handles PUT requests.
+   *
+   * @param fn - The handler.
+   * @returns A new builder carrying `PUT`, so the accumulated
+   * handlers can be destructured off it.
+   */
   put(fn: RouteHandler<Context, Injects>): Omit<IRouteBuilder<Injects, Methods & { PUT: RouteNextHandler }>, "route"> & Methods & { PUT: RouteNextHandler };
+  /**
+   * Handles DELETE requests.
+   *
+   * @param fn - The handler.
+   * @returns A new builder carrying `DELETE`, so the accumulated
+   * handlers can be destructured off it.
+   */
   delete(fn: RouteHandler<Context, Injects>): Omit<IRouteBuilder<Injects, Methods & { DELETE: RouteNextHandler }>, "route"> & Methods & { DELETE: RouteNextHandler };
+  /**
+   * Handles PATCH requests.
+   *
+   * @param fn - The handler.
+   * @returns A new builder carrying `PATCH`, so the accumulated
+   * handlers can be destructured off it.
+   */
   patch(fn: RouteHandler<Context, Injects>): Omit<IRouteBuilder<Injects, Methods & { PATCH: RouteNextHandler }>, "route"> & Methods & { PATCH: RouteNextHandler };
+  /**
+   * Handles OPTIONS requests.
+   *
+   * @param fn - The handler.
+   * @returns A new builder carrying `OPTIONS`, so the accumulated
+   * handlers can be destructured off it.
+   */
   options(fn: RouteHandler<Context, Injects>): Omit<IRouteBuilder<Injects, Methods & { OPTIONS: RouteNextHandler }>, "route"> & Methods & { OPTIONS: RouteNextHandler };
+  /**
+   * Handles HEAD requests.
+   *
+   * @param fn - The handler.
+   * @returns A new builder carrying `HEAD`, so the accumulated
+   * handlers can be destructured off it.
+   */
   head(fn: RouteHandler<Context, Injects>): Omit<IRouteBuilder<Injects, Methods & { HEAD: RouteNextHandler }>, "route"> & Methods & { HEAD: RouteNextHandler };
 }
 
@@ -204,6 +280,28 @@ class RouteBuilder<Injects extends InjectMap = {}, Methods extends Record<string
   }
 }
 
+/**
+ * A route handler with injected dependencies, typed errors and a response
+ * envelope.
+ *
+ * Whatever the handler returns is wrapped in an {@link HttpResponse} —
+ * `{ success, data, status, statusText, headers, error }` — **unless it returns
+ * a `Response`**, which is sent untouched. Throwing an {@link Exception} yields
+ * its status; anything else is logged and becomes a 500.
+ *
+ * @example
+ * export const { GET, POST } = Route({ users: UserRepository })
+ *   .use(requireAuth)
+ *   .get(async (ctx) => {
+ *     const user = await ctx.users.byId(ctx.params.id as string);
+ *     if (!user) throw new NotFound("No such user");
+ *     return user;
+ *   })
+ *   .post(async (ctx) => ctx.users.create(await ctx.json()));
+ *
+ * @param arg - Tokens to inject, or a handler to run for every method.
+ * @returns A builder, or a Next route handler when given a function.
+ */
 function RouteBase(handle: RouteHandler<Context, {}>): RouteNextHandler;
 function RouteBase<Injects extends InjectMap = {}>(injects?: Injects): IRouteBuilder<Injects>;
 function RouteBase(arg?: InjectMap | RouteHandler<Context, {}>): RouteNextHandler | IRouteBuilder<InjectMap> {
@@ -214,6 +312,7 @@ function RouteBase(arg?: InjectMap | RouteHandler<Context, {}>): RouteNextHandle
   return new RouteBuilder<InjectMap>((arg ?? {}) as InjectMap);
 }
 
+/** The callable {@link Route} plus its statics. */
 export interface RouteFactory {
   (handle: RouteHandler<Context, {}>): RouteNextHandler;
   <Injects extends InjectMap = {}>(injects?: Injects): IRouteBuilder<Injects>;
@@ -230,6 +329,7 @@ export interface RouteFactory {
   readonly head: (fn: RouteHandler<Context, {}>) => Omit<IRouteBuilder<{}, { HEAD: RouteNextHandler }>, "route"> & { HEAD: RouteNextHandler };
 }
 
+/** See {@link RouteBase}. Assign {@link RouteFactory.error} to hook every route's errors. */
 const RouteImpl = Object.assign(RouteBase, {
   error: null as RouteFilter | null,
 });

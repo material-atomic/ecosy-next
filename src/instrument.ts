@@ -1,14 +1,19 @@
 import type { Promisable } from "./types";
 
+/** A startup step for one runtime. */
 export type InstrumentHandler = () => Promisable<unknown>;
+/** A handler for Next's `onRequestError`. */
 export type InstrumentErrorHandler = (err: any, req: any, ctx: any) => Promisable<unknown>;
 
+/** A declarative step: dynamic imports to run at startup. */
 export interface InstrumentConfig {
   bootstrap?: (() => Promisable<unknown>)[];
 }
 
+/** Either a function to call or a {@link InstrumentConfig} to load. */
 export type InstrumentParam = InstrumentHandler | InstrumentConfig;
 
+/** What a builder has accumulated so far, per runtime. */
 interface InstrumentDescriptor {
   readonly nodejs: readonly InstrumentParam[];
   readonly edge: readonly InstrumentParam[];
@@ -16,18 +21,56 @@ interface InstrumentDescriptor {
   readonly error: readonly InstrumentErrorHandler[];
 }
 
+/** The chainable builder returned by {@link InstrumentBase}. Every method returns a new builder. */
 export interface IInstrumentBuilder {
+  /**
+   * Adds a step that runs only under the Node.js runtime.
+   *
+   * @param param - A function, or imports to load.
+   */
   nodejs(param: InstrumentParam): IInstrumentBuilder;
+  /**
+   * Adds a step that runs only under the Edge runtime.
+   *
+   * @param param - A function, or imports to load.
+   */
   edge(param: InstrumentParam): IInstrumentBuilder;
+  /**
+   * Adds a step that runs only in the browser.
+   *
+   * @param param - A function, or imports to load.
+   */
   browser(param: InstrumentParam): IInstrumentBuilder;
+  /**
+   * Adds a handler for `onRequestError`. All of them run, in order.
+   *
+   * @param fn - Receives the error, the request and Next's context.
+   */
   error(fn: InstrumentErrorHandler): IInstrumentBuilder;
+  /**
+   * Runs the steps for whichever runtime this is — browser first if `window`
+   * exists, otherwise by `NEXT_RUNTIME`. A failing import inside an
+   * {@link InstrumentConfig} is warned about, not thrown.
+   */
   execute(): Promise<void>;
+  /**
+   * Closes the builder.
+   *
+   * @returns `register` and `onRequestError`, to re-export from
+   * `instrumentation.ts` under exactly those names.
+   */
   start(): {
     register: () => Promise<void>;
     onRequestError: (err: unknown, req: unknown, ctx: unknown) => Promise<void>;
   };
 }
 
+/**
+ * Builds an instrumentation builder from an existing descriptor. Use the
+ * ready-made {@link Instrument} unless you are starting from steps of your own.
+ *
+ * @param descriptor - Steps accumulated so far. Defaults to none.
+ */
 export function InstrumentBase(descriptor: InstrumentDescriptor = { nodejs: [], edge: [], browser: [], error: [] }): IInstrumentBuilder {
   return class InstrumentBuilder {
     private static _descriptor = descriptor;
@@ -104,4 +147,14 @@ export function InstrumentBase(descriptor: InstrumentDescriptor = { nodejs: [], 
   }
 }
 
+/**
+ * Per-runtime startup, in the shape `instrumentation.ts` expects.
+ *
+ * @example
+ * // instrumentation.ts
+ * export const { register, onRequestError } = Instrument
+ *   .nodejs(() => bootstrap.init())
+ *   .error((err) => reportToSentry(err))
+ *   .start();
+ */
 export const Instrument = InstrumentBase();

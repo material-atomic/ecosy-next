@@ -1,3 +1,10 @@
+/**
+ * MIME types by short name, for building `Content-Type` headers without
+ * retyping the strings.
+ *
+ * @example
+ * new Response(body, { headers: { "content-type": CONTENT_TYPES.json } });
+ */
 export const CONTENT_TYPES = {
   json: "application/json",
   text: "text/plain",
