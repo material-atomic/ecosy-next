@@ -10,7 +10,6 @@ export * from "./content-type";
 export * from "./context";
 export * from "./cookie";
 export * from "./exception";
-export * from "./instrument";
 export * from "./proxy";
 export * from "./res";
 export * from "./types";
