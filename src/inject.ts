@@ -1,11 +1,14 @@
 import { InjectMap, ClassType, Injected } from "./types";
+import { defineTokens } from "./container";
 
 /**
  * Injects dependencies onto an existing object, one property per key. This is
  * how {@link Route} puts tokens on a request context.
  *
- * Properties are defined `enumerable` and `configurable` but not guarded, so a
- * key that already exists is replaced.
+ * Each property is a getter onto the token's shared instance, built the first
+ * time any property for that class is read. Properties are
+ * `enumerable` and `configurable` but not guarded, so a key that already exists
+ * is replaced.
  *
  * @example
  * const ctx = { request };
@@ -15,16 +18,10 @@ import { InjectMap, ClassType, Injected } from "./types";
  * @template Obj - The object being extended.
  * @template Injects - Map of property name to class token.
  * @param obj - The object to define the properties on.
- * @param injects - Tokens to construct, each with no arguments.
+ * @param injects - Tokens, each constructible with no arguments.
  */
 export function inject<Obj, Injects extends InjectMap>(obj: Obj, injects: Injects) {
-  for (const [key, ClassToken] of Object.entries(injects)) {
-    Object.defineProperty(obj, key, {
-      value: new ClassToken(),
-      enumerable: true,
-      configurable: true,
-    });
-  }
+  defineTokens(obj as object, injects);
 }
 
 /**
@@ -32,8 +29,10 @@ export function inject<Obj, Injects extends InjectMap>(obj: Obj, injects: Inject
  * `extends` is how they arrive — no wrapper object, no container to register
  * with.
  *
- * Tokens are constructed every time the class is, so anything worth reusing
- * should be a singleton captured by a factory that hands the same instance out.
+ * Tokens are not constructed with the class: every instance of it, and every
+ * context anywhere else naming the same token, reads the one instance of that
+ * token, built on first read. A token therefore must not keep per-request state
+ * on itself — that belongs on the request's {@link Context}.
  *
  * @example
  * class Vendor extends Inject({ fetcher: HttpClient }) {
@@ -43,7 +42,7 @@ export function inject<Obj, Injects extends InjectMap>(obj: Obj, injects: Inject
  * }
  *
  * @template Injects - Map of property name to class token.
- * @param injects - Tokens to construct, each with no arguments.
+ * @param injects - Tokens, each constructible with no arguments.
  * @returns A class to extend. Declare a constructor and `super()` first.
  */
 function Injectable<Injects extends InjectMap>(injects: Injects): ClassType<Injected<{}, Injects>> {

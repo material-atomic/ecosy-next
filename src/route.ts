@@ -1,4 +1,7 @@
 /* eslint-disable @typescript-eslint/no-empty-object-type */
+import type { ContextValues } from "./context";
+import { checkRequestId } from "./request-id";
+import { REQUEST_ID, RequestStore } from "./request-store";
 import { NextRequest } from "next/server";
 import { Context, Memory } from "./context";
 import { Injected, InjectMap, RouteHandler, RouteNextHandler, RoutePayload } from "./types";
@@ -96,6 +99,40 @@ export interface IRouteBuilder<Injects extends InjectMap = {}, Methods extends R
   head(fn: RouteHandler<Context, Injects>): Omit<IRouteBuilder<Injects, Methods & { HEAD: RouteNextHandler }>, "route"> & Methods & { HEAD: RouteNextHandler };
 }
 
+/**
+ * What the proxy handed this request, taken out of the shared store so that no
+ * other request — nor this one sent again — can read it.
+ *
+ * Without a Proxy there is nothing to take, and an `x-ecosyrequest-id` the
+ * client sent is ignored. With one, the header has to be an id this process's
+ * Proxy issued; missing, forged or from elsewhere, the handler never runs.
+ */
+async function takeProxyValues(req: NextRequest): Promise<ContextValues> {
+  if (!Memory.isProxyActivated) return { local: {} };
+
+  const header = req.headers.get(REQUEST_ID);
+  if (!header) {
+    throw new Error("[Ecosy] Missing 'x-ecosyrequest-id' header in a proxied environment. Ensure this request passes through the Proxy middleware.");
+  }
+
+  const check = await checkRequestId(header);
+  if (check === "foreign") {
+    throw new Error(
+      "[Ecosy] 'x-ecosyrequest-id' was not minted by this process: no Proxy here has issued an id yet. " +
+        "Proxy and Route must run in the same Node.js process — a proxy on the edge runtime, or in another " +
+        "instance, cannot hand values to this route. A client making the header up looks the same.",
+    );
+  }
+  if (check === "invalid") {
+    throw new Error(
+      "[Ecosy] Invalid 'x-ecosyrequest-id': it is not an id this process's Proxy issued. " +
+        "The header was forged or altered, or a Proxy in another process signed it.",
+    );
+  }
+
+  return { local: RequestStore.claim(header) };
+}
+
 class RouteBuilder<Injects extends InjectMap = {}, Methods extends Record<string, RouteNextHandler> = {}> implements IRouteBuilder<Injects, Methods> {
   constructor(
     public readonly injects: Injects,
@@ -133,13 +170,7 @@ class RouteBuilder<Injects extends InjectMap = {}, Methods extends Record<string
       let res: Response;
       
       const params = await payload.params;
-      const context = new Context(req, params, injectsMap);
-
-      const isProxyActivated = Memory.isProxyActivated;
-
-      if (isProxyActivated && !req.headers.has("x-ecosyrequest-id")) {
-        throw new Error("[Ecosy] Missing 'x-ecosyrequest-id' header in a proxied environment. Ensure this request passes through the Proxy middleware.");
-      }
+      const context = new Context(req, params, injectsMap, await takeProxyValues(req));
 
       try {
         try {

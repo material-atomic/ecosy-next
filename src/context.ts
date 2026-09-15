@@ -4,10 +4,11 @@ import { createUrl, UrlOptions } from "./url";
 import { Res } from "./res";
 import { Cookie } from "./cookie";
 import { NextURL } from "next/dist/server/web/next-url";
+import { defineTokens } from "./container";
+import { REQUEST_ID, RequestStore } from "./request-store";
 
 const MEMORY_KEY = Symbol.for("@ECOSY/CONTEXT_MEMORY");
 const PROXY_KEY = Symbol.for("@ECOSY/CONTEXT_PROXY");
-const REQUEST_ID = "x-ecosyrequest-id";
 
 const _global = globalThis as (typeof globalThis & {
   [MEMORY_KEY]: Map<string, any>;
@@ -23,8 +24,8 @@ const memory = _global[MEMORY_KEY];
  * A process-wide key/value store, held on `globalThis` under a `Symbol.for` key
  * so a hot reload re-uses the same Map instead of starting a second one.
  *
- * {@link Context.set} and {@link Context.get} keep per-request state here,
- * keyed by request id, and {@link Context.destroy} removes it again.
+ * What a {@link Proxy} hands to a {@link Route} does not live here: it goes
+ * through a store of its own, bounded and keyed by a signed request id.
  */
 export class Memory {
   /**
@@ -88,12 +89,27 @@ export class Memory {
 export type BaseUrlOptions = Omit<UrlOptions, "base">;
 
 /**
+ * Where a context keeps what {@link Context.set} stores. {@link Proxy} and
+ * {@link Route} choose it; a context built by hand keeps its own.
+ *
+ * - `shared`: written under a signed request id, for the route serving the same
+ *   request to take — a Proxy's context.
+ * - `local`: held on the context itself — a Route's, starting from whatever the
+ *   proxy handed over.
+ */
+export type ContextValues = { shared: string } | { local: Record<string, unknown> };
+
+/**
  * The request context handed to every route handler and middleware — the
  * request itself, its parsed URL and params, response constructors, cookie
  * access, and a per-request bag of values.
  *
- * Injected dependencies are defined on it as own properties, so `ctx.users` is
- * typed through {@link Injected} rather than looked up.
+ * A context is built per request; its injected dependencies are not. Each is
+ * an own getter onto its token's shared instance, built the first time it is
+ * read and typed through {@link Injected}. Shared per class, and a class is one
+ * per module graph that evaluates it — Next compiles instrumentation, the proxy,
+ * route handlers and pages separately — so it is one per process only for a
+ * class anchored with `@ecosy/anchor`.
  *
  * @template Env - The shape of `process.env` this app expects.
  */
@@ -106,20 +122,19 @@ export class Context<Env extends LiteralObject = LiteralObject> {
   readonly res = Res;
   readonly cookie = Cookie;
 
-  private ecosyRequestId: string | null = null;
+  private readonly values: ContextValues;
 
   /**
-   * A request arriving without an `x-ecosyrequest-id` header is given a fresh
-   * one, which is what keys its entry in {@link Memory}.
-   *
    * @param req - The incoming request.
    * @param params - Route params, already resolved.
-   * @param injects - Tokens to construct and define on the context.
+   * @param injects - Tokens to define on the context. None is constructed here.
+   * @param values - Where `set` keeps values. See {@link ContextValues}.
    */
   constructor(
     req: NextRequest,
     params: Record<string, string | string[]>,
     injects?: InjectMap,
+    values: ContextValues = { local: {} },
   ) {
     this.req = req;
     this.url = new URL(req.url);
@@ -131,22 +146,18 @@ export class Context<Env extends LiteralObject = LiteralObject> {
     this.params = params;
 
     if (injects) {
-      for (const [key, ClassToken] of Object.entries(injects)) {
-        Object.defineProperty(this, key, {
-          value: new ClassToken(),
-          enumerable: true,
-          configurable: true,
-        });
-      }
+      defineTokens(this, injects);
     }
 
-    let reqId = this.req.headers.get(REQUEST_ID);
-    if (!reqId) {
-      reqId = crypto.randomUUID();
-      this.setHeader(REQUEST_ID, reqId);
-    }
+    this.values = values;
 
-    this.ecosyRequestId = reqId;
+    /* An id the client sent is never forwarded: a proxy's context carries the
+       one it was issued, and any other context carries none. */
+    if ("shared" in values) {
+      this.setHeader(REQUEST_ID, values.shared);
+    } else {
+      this.init.request.headers!.delete(REQUEST_ID);
+    }
   }
 
   /** `process.env`, typed as `Env`. */
@@ -187,6 +198,9 @@ export class Context<Env extends LiteralObject = LiteralObject> {
    * Stores a value for the rest of this request, for a middleware to hand
    * something to the handler.
    *
+   * In a {@link Proxy} the value waits for the {@link Route} that serves the
+   * request, which takes it once; unclaimed, it expires after a minute.
+   *
    * @example
    * ctx.set("userId", payload.sub);
    *
@@ -194,10 +208,10 @@ export class Context<Env extends LiteralObject = LiteralObject> {
    * @param value - Value to store.
    */
   set(key: string, value: unknown) {
-    if (this.ecosyRequestId) {
-      const current: Record<string, unknown> = Memory.get(this.ecosyRequestId) || {};
-      current[key] = value;
-      Memory.set(this.ecosyRequestId, current);
+    if ("shared" in this.values) {
+      RequestStore.write(this.values.shared, key, value);
+    } else {
+      this.values.local[key] = value;
     }
   }
 
@@ -208,8 +222,8 @@ export class Context<Env extends LiteralObject = LiteralObject> {
    * @returns The value, or `undefined` when it was never set.
    */
   get<DataType>(key: string) {
-    if (!this.ecosyRequestId) return undefined;
-    return (Memory.get(this.ecosyRequestId) as Record<string, DataType>)?.[key];
+    const values = "shared" in this.values ? RequestStore.peek(this.values.shared) : this.values.local;
+    return values?.[key] as DataType | undefined;
   }
 
   /**
@@ -226,6 +240,15 @@ export class Context<Env extends LiteralObject = LiteralObject> {
       additionalHeaders.forEach((value, key) => {
         combinedHeaders.set(key, value);
       });
+    }
+
+    /* The request id is this context's to set — not the client's, and not the
+       caller's: forwarding one it did not issue is how a request reads another's
+       values. */
+    if ("shared" in this.values) {
+      combinedHeaders.set(REQUEST_ID, this.values.shared);
+    } else {
+      combinedHeaders.delete(REQUEST_ID);
     }
 
     return this.res.next({
@@ -283,13 +306,14 @@ export class Context<Env extends LiteralObject = LiteralObject> {
   }
 
   /**
-   * Drops this request's entry from {@link Memory}. {@link Route} calls it once
-   * the response is built; skipping it leaks the entry for the life of the
-   * process.
+   * Forgets what this context stored. {@link Route} calls it once the response
+   * is built. Nothing is left behind without it — a route takes the proxy's
+   * values out of the shared store as it starts, and unclaimed ones expire — but
+   * a context kept past its request should not keep its values alive.
    */
   destroy() {
-    if (this.ecosyRequestId) {
-      Memory.remove(this.ecosyRequestId);
+    if ("local" in this.values) {
+      for (const key of Object.keys(this.values.local)) delete this.values.local[key];
     }
   }
 

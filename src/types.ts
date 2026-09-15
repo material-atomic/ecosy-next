@@ -22,6 +22,10 @@ export interface MiddlewareResponseInit extends globalThis.ResponseInit {
  * An injection token: a class constructible with **no arguments**. Anything
  * needing configuration is produced by a factory that captures it and returns
  * such a class.
+ *
+ * A token is constructed on first use and shared by every request — keep
+ * per-request state off it. Once per class, and a class is one per module graph
+ * that evaluates it; anchor it with `@ecosy/anchor` for one per process.
  */
 export type ClassType<Instance = unknown> = new () => Instance;
 

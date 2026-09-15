@@ -1,8 +1,9 @@
 /* eslint-disable @typescript-eslint/no-empty-object-type */
 import { InjectMap, Injected } from "./types";
 import type { Promisable } from "./types";
+import { defineTokens } from "./container";
 
-const BOOTSTRAP_KEY = Symbol.for("SNIP_RENDER_BOOTSTRAP_STORE");
+const BOOTSTRAP_KEY = Symbol.for("@ecosy/next:bootstrap-store");
 
 const _global = globalThis as (typeof globalThis & {
   [BOOTSTRAP_KEY]: Map<string, unknown>;
@@ -16,13 +17,7 @@ if (!_global[BOOTSTRAP_KEY]) {
 export class BootstrapContext {
   constructor(injects?: InjectMap) {
     if (injects) {
-      for (const [key, ClassToken] of Object.entries(injects)) {
-        Object.defineProperty(this, key, {
-          value: new ClassToken(),
-          enumerable: true,
-          configurable: true,
-        });
-      }
+      defineTokens(this, injects);
     }
   }
 }
@@ -72,8 +67,8 @@ export interface IBootstrapBuilder<Injects extends InjectMap = {}> {
    * Closes the builder.
    *
    * @param fn - Optional final step, run after all the others. It receives a
-   * **newly built** context, so its injected tokens are fresh instances rather
-   * than the ones the registered steps saw.
+   * new context, but its injected tokens are the same instances the registered
+   * steps saw — and the same ones every route reads.
    * @returns An object with `init()`, to call from `instrumentation.ts`.
    */
   start(fn?: (context: Injected<BootstrapContext, Injects>) => Promisable<void>): { init: () => Promise<void> };
@@ -100,12 +95,10 @@ class BootstrapBuilder<Injects extends InjectMap = {}> implements IBootstrapBuil
   }
 
   async execute(): Promise<void> {
-    console.log(`[BootstrapBuilder] execute() called. Total fns: ${this.fns.length}`);
     const context = new BootstrapContext(this.injects) as Injected<BootstrapContext, Injects>;
     for (const fn of this.fns) {
       await fn(context);
     }
-    console.log(`[BootstrapBuilder] execute() finished.`);
   }
 
   start(fn?: (context: Injected<BootstrapContext, Injects>) => Promisable<void>): { init: () => Promise<void> } {
@@ -166,18 +159,15 @@ BootstrapImpl.boost = async function (loader: () => Promise<any>) {
   if (!mod) return;
 
   if (typeof mod.init === "function") {
-    console.log("[Bootstrap.boost] Found top-level init()");
     await mod.init();
     return;
   }
 
   if (mod.default && typeof mod.default === "object") {
     if (typeof mod.default.init === "function") {
-      console.log("[Bootstrap.boost] Found default.init()");
       await mod.default.init();
       return;
     } else if (typeof mod.default.execute === "function") {
-      console.log("[Bootstrap.boost] Found default.execute()");
       await mod.default.execute();
       return;
     }
@@ -187,10 +177,8 @@ BootstrapImpl.boost = async function (loader: () => Promise<any>) {
     const exported = mod[key];
     if (exported && typeof exported === "object") {
       if (typeof exported.init === "function") {
-        console.log(`[Bootstrap.boost] Found exported.${key}.init()`);
         await exported.init();
       } else if (typeof exported.execute === "function" && typeof exported.register === "function") {
-        console.log(`[Bootstrap.boost] Found exported.${key}.execute()`);
         await exported.execute();
       }
     }

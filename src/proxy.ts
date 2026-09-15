@@ -3,12 +3,9 @@ import { Injected, InjectMap, MiddlewareFn, RoutePayload } from "./types";
 import { NextRequest } from "next/server";
 import { Context } from "./context";
 import { Exception } from "./exception";
-
-/* Importing this module anywhere marks the app as proxied. From then on a
-   Route whose request lacks `x-ecosyrequest-id` throws, which turns "this route
-   was reachable without middleware" into an error at the boundary — and means
-   the proxy's `matcher` must cover every route expected to work. */
-Context.activateProxy();
+import { Res } from "./res";
+import { checkRequestId, mintRequestId } from "./request-id";
+import { REQUEST_ID } from "./request-store";
 
 /** A middleware in the shape Next expects to be exported from `proxy.ts`. */
 export type ProxyNextHandler = (req: NextRequest, payload: RoutePayload) => Promise<Response>;
@@ -44,6 +41,14 @@ function createProxyCallable<Injects extends InjectMap>(
   injects: Injects,
   middlewares: MiddlewareFn<Injected<Context, Injects>>[] = []
 ): IProxyCallable<Injects> {
+  /* Building a Proxy — not importing this module — marks the app as proxied.
+     The root entry re-exports this module, so activating on import proxied
+     every app that imported anything from the package, Proxy or not. From here
+     on a Route whose request lacks `x-ecosyrequest-id` throws, which turns "this
+     route was reachable without middleware" into an error at the boundary — and
+     means the proxy's `matcher` must cover every route expected to work. */
+  Context.activateProxy();
+
   const runWithCatch = async (context: Context, fn?: MiddlewareFn<Injected<Context, Injects>>) => {
     try {
       if (middlewares.length) {
@@ -92,15 +97,33 @@ function createProxyCallable<Injects extends InjectMap>(
     }
   };
 
-  const handler = async (req: NextRequest, payload: RoutePayload) => {
-    const params = await payload.params;
-    const context = new Context(req, params, injects);
+  /* Every request gets an id minted here. One the client sent is never used:
+     an id this process did not issue is a forgery and is refused before any
+     middleware runs, and one it did issue is being replayed — ignored, and the
+     request still gets a fresh one. */
+  const serve = async (req: NextRequest, payload: RoutePayload, fn?: MiddlewareFn<Injected<Context, Injects>>) => {
+    const incoming = req.headers.get(REQUEST_ID);
+    if (incoming !== null && (await checkRequestId(incoming)) !== "valid") {
+      return Res.json({
+        success: false,
+        data: null,
+        status: 400,
+        statusText: "Bad Request",
+        headers: {},
+        error: "Invalid x-ecosyrequest-id header",
+      });
+    }
 
-    const res = await runWithCatch(context);
+    const params = await payload.params;
+    const context = new Context(req, params, injects, { shared: await mintRequestId() });
+
+    const res = await runWithCatch(context, fn);
     if (res) return res;
 
     return context.res.next(context.init);
   };
+
+  const handler = (req: NextRequest, payload: RoutePayload) => serve(req, payload);
 
   const callable = handler as IProxyCallable<Injects>;
 
@@ -111,15 +134,7 @@ function createProxyCallable<Injects extends InjectMap>(
   callable.proxy = (fn) => {
     if (!fn) return handler;
 
-    return async (req: NextRequest, payload: RoutePayload) => {
-      const params = await payload.params;
-      const context = new Context(req, params, injects);
-
-      const res = await runWithCatch(context, fn);
-      if (res) return res;
-
-      return context.res.next(context.init);
-    };
+    return (req: NextRequest, payload: RoutePayload) => serve(req, payload, fn);
   };
 
   return callable;
@@ -131,6 +146,10 @@ function createProxyCallable<Injects extends InjectMap>(
  * A middleware returning a `Response` **stops the chain** and that response is
  * sent; returning anything else continues to the next one. This differs from
  * {@link Route}, where a middleware's return value is discarded.
+ *
+ * Building one marks the app as proxied: from then on every {@link Route}
+ * demands the `x-ecosyrequest-id` header the proxy adds, so the `matcher` must
+ * cover every route expected to work. Importing the package alone does not.
  *
  * @example
  * // src/proxy.ts
