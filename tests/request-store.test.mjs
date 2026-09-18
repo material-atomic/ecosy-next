@@ -5,7 +5,7 @@
    bounded" test — not `mock.timers`, which is not this repo's convention.
    The 10 000-entry cap already has a test in request-id.test.mjs; it is not
    repeated here. */
-import { test } from "node:test";
+import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 
@@ -16,6 +16,21 @@ const { RequestStore } = require("../dist/request-store.js");
    `store()` — reading the symbol at import time would see it before it
    exists, so this looks it up fresh each call instead of caching it. */
 const store = () => globalThis[Symbol.for("@ecosy/next:request-store")];
+
+/* 0039: this file used to buy test-order independence by having each test's
+   first write land at a moment further in the future than the one before it
+   (+10min, +20min, +30min, +40min) — far enough that its own `prune()` swept
+   away whatever the previous tests left behind. That trick is *why* the file
+   only passed in the order it was written: reverse the blocks and two go
+   red, because the "further into the future" escalation only works forward.
+   0023–0027 all still insert tests into this exact file, so a rule that only
+   holds in one order is a trap for every one of them.
+   Replaced with a fact about the store itself, asserted once, up front: it
+   starts every test empty. `?.` is required, not decorative — `store()` (the
+   real one, in request-store.ts) creates the Map lazily on the first write,
+   so before that first write this file's own `store()` helper above sees
+   `undefined`, and `undefined.clear()` would throw. */
+beforeEach(() => { store()?.clear(); });
 
 /** Runs `fn` with `Date.now()` pinned to `now`, restoring the real clock after. */
 function withClock(now, fn) {
@@ -31,6 +46,26 @@ function withClock(now, fn) {
 /* ---------------------------------------------------------------------- */
 /* 7. claim never returns the same entry twice; peek never removes it.    */
 /* ---------------------------------------------------------------------- */
+
+/* Mutant, run and left unpatched, but on a corrected premise (0039 round 3):
+   `claim` returning `{ ...entry.values }` (a shallow copy) instead of
+   `entry.values` itself. The earlier version of this note claimed "nothing
+   else in the process still holds a reference to compare against" because
+   the line above `claim`'s return already deletes the id from the Map —
+   that premise is false, and measurably so: `peek(id)` does NOT delete,
+   so calling `peek(id)` and then `claim(id)` on the same id captures a
+   reference to the exact same `values` object `claim` is about to return.
+   Measured directly against the real, unmutated code:
+   `RequestStore.write(id, "a", 1)` then `RequestStore.peek(id) ===
+   RequestStore.claim(id)` is `true` today. A caller COULD hold that
+   reference and compare by `===`. The conclusion — don't patch — still
+   holds, but for the narrower, actual reason: nothing in this package's
+   own code ever does that comparison. Every caller of claim()/peek() reads
+   values by key, never by object identity, so a shallow-copy mutant here
+   changes nothing any real caller observes, even though "no one COULD
+   hold a reference" was the wrong justification. See the matching
+   correction beside the header-copy tests in context.test.mjs for the
+   same shape of mistake on the other side of this file. */
 
 test("write then peek twice both see the value — peek does not remove it", () => {
   RequestStore.write("rs-peek-twice", "a", 1);
@@ -110,17 +145,11 @@ test("writing to an existing id extends its expiry from the time of the second w
 
 test("a stale entry ahead of a fresh one in Map order is pruned by the next write, and the fresh one is untouched", () => {
   /* prune() only deletes a contiguous prefix from the FRONT of the Map, and
-     stops at the first entry it finds still live. This file's earlier
-     "extend" test left an entry with a deliberately long remaining life
-     sitting ahead of anything this test writes — left alone, that entry
-     would block prune() before it ever reaches this test's own stale one,
-     which is the exact failure the assertions below would otherwise miss.
-     Jumping far enough into the future first, with one throwaway write,
-     makes every leftover entry stale and lets its own trailing prune() call
-     clear the Map down to a known state before the real experiment. */
-  const t0 = Date.now() + 10 * 60_000;
-  withClock(t0, () => RequestStore.write("rs-prune-flush", "x", 1));
-
+     stops at the first entry it finds still live. beforeEach already left
+     the Map empty, so "rs-prune-stale" is the only — and therefore front —
+     entry once written, with nothing ahead of it to block prune() before it
+     reaches this test's own stale entry. */
+  const t0 = Date.now();
   withClock(t0, () => RequestStore.write("rs-prune-stale", "a", "old"));
   withClock(t0 + 61_000, () => RequestStore.write("rs-prune-fresh", "a", "new"));
 
@@ -143,46 +172,43 @@ test("write() re-inserts an existing id at the end of the Map's iteration order"
 /* write()/merge boundary actually exercise. peek() and claim() re-check  */
 /* expiry themselves, so none of these three is visible through them —    */
 /* only a direct look at the underlying Map tells break from continue, or */
-/* an exact-boundary write from a merge. That's why each flushes the      */
-/* shared Map first: any leftover live entry ahead of the one under test  */
-/* would hide the difference the same way it did above. */
+/* an exact-boundary write from a merge. beforeEach already starts each   */
+/* one from an empty Map, so — unlike before 0039 — nothing here needs to */
+/* flush a leftover entry first: the only entries in play are the ones    */
+/* each test writes for itself. */
 /* ---------------------------------------------------------------------- */
 
-test("prune() stops at the first live entry in Map order rather than scanning past it, so a backdated-expired entry sitting behind two live ones is not removed", () => {
+test("prune() stops at the first live entry in Map order rather than scanning past it, so a backdated-expired entry sitting behind a live one is not removed", () => {
   /* Only reachable by moving the mocked clock backwards between writes —
      real usage never does that, Date.now() is monotonic — but it is the
      one arrangement that tells "stop at the first live entry" (break)
      apart from "skip live entries and keep scanning" (continue): both read
      as expired through peek/claim either way, since those re-check expiry
      themselves regardless of what prune() has physically removed. */
-  const future = Date.now() + 20 * 60_000;
-  withClock(future, () => RequestStore.write("rs-scan-flush", "x", 1));
-
-  withClock(future, () => RequestStore.write("rs-scan-live", "a", 1));
-  withClock(future - 100_000, () => RequestStore.write("rs-scan-backdated", "a", 1));
-  withClock(future, () => RequestStore.write("rs-scan-trigger", "a", 1));
+  const now = Date.now();
+  withClock(now, () => RequestStore.write("rs-scan-live", "a", 1));
+  withClock(now - 100_000, () => RequestStore.write("rs-scan-backdated", "a", 1));
+  withClock(now, () => RequestStore.write("rs-scan-trigger", "a", 1));
 
   assert.equal(
     store().has("rs-scan-backdated"),
     true,
-    "prune() broke out at rs-scan-flush (still live at `future`) before ever reaching this entry",
+    "prune() broke out at rs-scan-live (still live at `now`) before ever reaching this entry",
   );
 });
 
 test("prune() treats an entry exactly at its expiry as expired, the same strict > as peek/claim use, not >=", () => {
-  const future = Date.now() + 30 * 60_000;
-  withClock(future, () => RequestStore.write("rs-boundary-flush", "x", 1));
-
-  withClock(future, () => RequestStore.write("rs-boundary-entry", "a", 1));
-  /* At this exact instant rs-boundary-flush's and rs-boundary-entry's expires
-     both equal `now` — expired under `>`, still "live" under `>=`. */
-  withClock(future + 60_000, () => RequestStore.write("rs-boundary-trigger", "a", 1));
+  const now = Date.now();
+  withClock(now, () => RequestStore.write("rs-boundary-entry", "a", 1));
+  /* At this exact instant rs-boundary-entry's expires equals `now` — expired
+     under `>`, still "live" under `>=`. */
+  withClock(now + 60_000, () => RequestStore.write("rs-boundary-trigger", "a", 1));
 
   assert.equal(store().has("rs-boundary-entry"), false, "an entry exactly at its expiry is expired, so prune() should have reached and removed it");
 });
 
 test("write() to an id exactly at its previous entry's expiry boundary starts fresh rather than merging the stale value in", () => {
-  const t0 = Date.now() + 40 * 60_000;
+  const t0 = Date.now();
   withClock(t0, () => RequestStore.write("rs-merge-boundary", "old", "stale"));
   /* current.expires === now here: expired under the strict `>` write() uses
      to decide whether to merge, so the stale "old" key must not survive. */

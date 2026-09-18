@@ -5,6 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { randomUUID } from "node:crypto";
 
 const require = createRequire(import.meta.url);
 const { Context, Memory, Proxy, Route } = require("../dist/index.js");
@@ -233,6 +234,360 @@ test("setHeader overriding a header the client sent keeps req.headers at the cli
 });
 
 /* ---------------------------------------------------------------------- */
+/* 0039 mục 1: init.request.headers is a COPY of every header the client  */
+/* sent, including the ones Context never touches — not a bag that starts */
+/* empty and only ever holds what setHeader() or the constructor itself   */
+/* wrote into it.                                                         */
+/*                                                                         */
+/* Why the two existing setHeader tests above (section 6) don't already   */
+/* cover this: both only read back the exact header they just set, so a  */
+/* copy that starts as `new Headers()` (nothing carried over) satisfies    */
+/* them just as well as a real copy would. Neither ever asks "the header  */
+/* I did NOT touch — is it still there". That question is the one the QA  */
+/* mutation `new Headers(req.headers)` → `new Headers()` survived through  */
+/* all 59 tests by never being asked.                                     */
+/*                                                                         */
+/* The first pass at this test (this commit, before QA's second look)     */
+/* asserted only the four names in CLIENT_HEADERS below, and its own name  */
+/* still promised "every client header" — a whitelist-forward mutant,     */
+/* a name-length-≤14 mutant, and a drop-empty-value mutant all satisfy     */
+/* four fixed names just as well as a real copy, and none of them is a    */
+/* strawman: "only forward the headers on an allow-list" is a plausible    */
+/* real rewrite of this constructor line, and it is exactly the one that   */
+/* would silently drop x-forwarded-for, user-agent, if-none-match and      */
+/* accept-encoding — surface 0024/0025 are about to stand on. Fixed by     */
+/* asserting against req.headers itself (below) instead of against a      */
+/* fixed guest list, so the promise in the test's name and the promise     */
+/* its body checks are the same axis, not three separate points on it.    */
+/*                                                                         */
+/* Headers measured (not assumed) to survive unchanged into `req.headers` */
+/* on a NextRequest built with `new NextRequest(url, { headers })`: all   */
+/* 21 tried, including the nine names this task's earlier draft assumed   */
+/* undici's Headers would filter as hop-by-hop (connection,               */
+/* transfer-encoding, keep-alive, host, content-length, te, upgrade,      */
+/* expect, proxy-authorization) — none were filtered, and a header sent   */
+/* with an empty string value keeps that exact empty string, not          */
+/* undefined or a dropped entry. Full list measured: cookie, authorization,*/
+/* content-type, x-client-trace, x-forwarded-for, user-agent,             */
+/* if-none-match, accept-encoding, connection, transfer-encoding,         */
+/* keep-alive, host, content-length, te, upgrade, expect,                 */
+/* proxy-authorization, origin, referer, x-csrf-token, and one header      */
+/* sent with value "". That is also why the loop below needs no exclusion  */
+/* list beyond REQUEST_ID: nothing NextRequest hands to `req.headers` is   */
+/* invisible to it.                                                       */
+/* ---------------------------------------------------------------------- */
+
+/* Measured (see the block above), not guessed: widened past the original four
+   names on purpose. A whitelist-forward rewrite whose allow-list happens to be
+   exactly {cookie, authorization, content-type, x-client-trace} — the four
+   names this file already used — satisfies a loop over req.headers exactly as
+   well as it satisfies a loop over this constant, because req.headers on a
+   NextRequest never carries anything beyond what it's given: looping over
+   req.headers only buys something when req.headers can hold a header the
+   mutation's list does not expect. x-forwarded-for, user-agent, if-none-match
+   and accept-encoding are the four the task names as the ones a plausible
+   "known application headers" allow-list would drop — added here for exactly
+   that reason, not as unrelated extra coverage. x-empty-value is here for a
+   different mutation on the same line: "copy every header except one whose
+   value is empty" — satisfied by every other entry above, none of which is
+   empty, so it needs one that actually is.
+
+   0039 round 3 adds origin, referer and x-csrf-token — QA's third
+   nine-name-preserving mutant deletes exactly these three after copying
+   everything else. Sending them here makes a fix that special-cases them
+   away observable through the SAME loop as everything else, below.
+
+   Written down where 0024/0025 will read it, because it is the honest
+   limit of what this file can prove: this only catches a header being
+   DROPPED after the client sent it. It cannot catch a header being
+   dropped that the client's request never carried in the first place —
+   there is nothing here to observe a header's absence against, since an
+   absent header and a correctly-copied absent header look identical. That
+   gap is a POINT, not an axis this loop closes; cookieJar (0024) and csrf
+   (0025) should not read "origin/referer/x-csrf-token are in this list" as
+   "this file proves they always arrive intact under every client request
+   shape" — it proves only that THIS constructed request's copies of them
+   survive. */
+const CLIENT_HEADERS = {
+  cookie: "sid=abc123",
+  authorization: "Bearer tok-xyz",
+  "content-type": "application/json",
+  "x-client-trace": "trace-1",
+  "x-forwarded-for": "203.0.113.5",
+  "user-agent": "test-agent/1.0",
+  "if-none-match": '"etag-1"',
+  "accept-encoding": "gzip",
+  "x-empty-value": "",
+  origin: "https://example.com",
+  referer: "https://example.com/from",
+  "x-csrf-token": "csrf-tok-1",
+};
+
+/* Returns req.headers as a name-sorted array of [name, value] pairs, minus
+   REQUEST_ID — REQUEST_ID is the one header Context DOES touch (it strips
+   it), which is a separate, already-covered promise (section 5 above), not
+   something this comparison should renegotiate. Sorting makes the compare
+   below order-independent; Headers' own iteration order is already stable
+   and alphabetic, but sorting explicitly means this never depends on that
+   implementation detail either. */
+function clientHeaderEntriesExcludingRequestId(headers) {
+  return [...headers].filter(([name]) => name !== REQUEST_ID).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+test("init.request.headers on a local Context is EXACTLY req.headers minus x-ecosyrequest-id — a two-way equality, not a one-way inclusion check", () => {
+  const req = new NextRequest(url(), { headers: CLIENT_HEADERS });
+  const ctx = new Context(req, {});
+
+  /* 0039 round 3 mục 2a: the loop this replaced only ever asked "for every
+     header req.headers has, is it also in init.request.headers" — a
+     one-directional inclusion check. It cannot see a header init.request
+     .headers has that req.headers does NOT: a fix that copies everything
+     correctly and then, say, ADDS its own extra header (x-ecosy-injected:
+     1) passes a one-way check just as well as a correct copy does. Full
+     set equality on both sides closes that: an invented header shows up on
+     the "actual" side with nothing to match it on "expected", and
+     assert.deepEqual on the two sorted arrays fails immediately. */
+  const expected = clientHeaderEntriesExcludingRequestId(req.headers);
+  const actual = clientHeaderEntriesExcludingRequestId(ctx.init.request.headers);
+  assert.deepEqual(actual, expected, "ctx.init.request.headers must hold exactly the client's headers minus x-ecosyrequest-id — nothing dropped, nothing added");
+});
+
+test("init.request.headers on a shared Context is EXACTLY req.headers minus x-ecosyrequest-id, AND separately sets x-ecosyrequest-id to the server-issued id — two independent things, checked separately so neither assertion can hide behind the other", () => {
+  const req = new NextRequest(url(), { headers: CLIENT_HEADERS });
+  const ctx = new Context(req, {}, undefined, { shared: "ctx-headers-shared-copy" });
+
+  // (1) the client headers survived the copy, exactly — same two-way equality as the local-branch test above.
+  const expected = clientHeaderEntriesExcludingRequestId(req.headers);
+  const actual = clientHeaderEntriesExcludingRequestId(ctx.init.request.headers);
+  assert.deepEqual(actual, expected, "ctx.init.request.headers must hold exactly the client's headers minus x-ecosyrequest-id on the shared branch too");
+
+  // (2) the request id is the one the server issued, not left unset by the copy above.
+  assert.equal(ctx.init.request.headers.get(REQUEST_ID), "ctx-headers-shared-copy");
+});
+
+/* 0039 round 3 mục 2b: every name above is a compile-time constant, so a
+   mutant could — in principle, if someone were determined enough — special-
+   case exactly this file's names and still pass.
+
+   Reviewer correction (0039 round 6 review): the sentence that used to stand
+   here claimed the table below closes that off "structurally, because its
+   names are generated while the test is RUNNING". That is true of exactly
+   TWO of its seven rows — the two built from randomUUID(). The other five
+   (`x-token99a`, `x_t`, `x.t`, `x-a1`, `X-UPPER-DYNAMIC`) are literal
+   constants sitting right here in the file, which is precisely the thing the
+   old sentence said this table was immune to. The rows are still worth
+   having — `x_t` and `x.t` are axes no generator in this file produces — but
+   they are chosen names, not unguessable ones, and the test's own name now
+   says so. The claim "no list written in advance could have matched this"
+   is carried for the whole axis, deterministically and at scale, by the
+   1024-header test further down, not by this table.
+
+   Table below, one axis different per row from an ordinary lowercase ASCII
+   token name — the axes are the ones the round asked for by name, not
+   invented here: length past any reasonable boundary, digits in the name,
+   three flavors of "valid HTTP token character but rare in practice"
+   (underscore, dot, digit right after a dash), the name sent upper-case,
+   and an empty value. `x_t`, `x.t` and `x-a1` are named directly in the
+   round's own instructions, not picked by this file — token grammar
+   (RFC 7230 §3.2.6) allows all three; a whitelist regex like /^[a-z-]+$/
+   (one of QA's five nine-name-preserving mutants) rejects every one of
+   them. The upper-case row is weaker by construction: Headers itself
+   lower-cases every name on both set and get (that's the Fetch spec, not
+   this code), so `.get("X-...")` and `.get("x-...")` are indistinguishable
+   to any caller including this test — it can only prove the copy path does
+   not do something case-sensitive of its own on top of what Headers
+   already normalizes; it cannot prove anything about wire-level casing. */
+const DYNAMIC_HEADER_CASES = [
+  { axis: "length far past any static boundary", name: `x-${randomUUID()}`, value: "v-length" },
+  { axis: "digits in the name", name: "x-token99a", value: "v-digits" },
+  { axis: "rare-but-valid token char: underscore", name: "x_t", value: "v-underscore" },
+  { axis: "rare-but-valid token char: dot", name: "x.t", value: "v-dot" },
+  { axis: "rare-but-valid token char: digit right after a dash", name: "x-a1", value: "v-dash-digit" },
+  { axis: "name sent upper-case", name: "X-UPPER-DYNAMIC", value: "v-upper" },
+  { axis: "empty value", name: `x-${randomUUID()}`, value: "" },
+];
+
+test("a table of header names, one axis different per row (length, digits, underscore, dot, digit-after-dash, upper-case, empty value), all survive the copy — five rows are fixed names picked for their axis, two are generated at runtime", () => {
+  const headers = Object.fromEntries(DYNAMIC_HEADER_CASES.map(({ name, value }) => [name, value]));
+  const req = new NextRequest(url(), { headers });
+  const ctx = new Context(req, {});
+
+  for (const { axis, name, value } of DYNAMIC_HEADER_CASES) {
+    assert.equal(ctx.init.request.headers.get(name), value, `axis "${axis}" (header ${JSON.stringify(name)}) did not survive the copy`);
+  }
+});
+
+/* 0039 round 4 mục 4: QA widened instead of narrowing, and found a wall
+   neither CLIENT_HEADERS (12 headers, 273 bytes of name+value) nor
+   DYNAMIC_HEADER_CASES (7 rows) was big enough to see. Three mutants
+   survived every test above:
+     - copy only the first 12 headers (in whatever order the copy iterates)
+     - copy every header except the one at index 12
+     - stop copying once the running total of name+value bytes passes 273
+   None of those three numbers is a coincidence — 12 and 273 are exactly
+   CLIENT_HEADERS' own size. A fixture that happens to be exactly as big as
+   a plausible mutant's hardcoded threshold cannot tell a correct,
+   unbounded copy apart from one secretly bounded at that same threshold;
+   the two produce an identical result on that one fixture, by construction.
+   "only forward headers on an allow-list" is 0039 round 1's example of a
+   plausible real rewrite that isn't a strawman — a positional or byte-
+   length ceiling is the same kind of plausible rewrite on the other axis
+   (someone bounding how much of a request's headers get forwarded, out of
+   a concern for header-bomb-style abuse), not a strawman either.
+
+   Round 4 fixed this by widening the fixture to a FIXED 45. That is the
+   same mistake as writing a static header NAME before the copy this file
+   tests even runs, just on a different axis: QA proved it at round 5 by
+   planting FOUR mutants at and around exactly 45 — copy the first 45 of
+   whatever order the copy iterates, drop precisely index 45, cap the
+   running byte total at 3850 (the real total of that exact 45-header
+   request), and copy the first 46 — every one of the four survived this
+   test, and every one of the four then dropped any header sent at
+   position 46-60.
+
+   Round 5 answered that by drawing the count at random each run, range
+   40-64. QA (round 6) rejected that too, with a counting argument, not a
+   style objection: a wall at some fixed N ≤ 63 is killed by the random
+   draw only on the runs that happen to land above N — for N=60 that was
+   measured at 1/12 runs, for N=50 at 5/12 — while a single fixed size of
+   1024 kills every wall N < 1024 on EVERY run, with probability 1.0,
+   because this file always builds exactly 1024 headers, never fewer. The
+   kill set of "draw randomly in [40,64]" is a SUBSET of the kill set of
+   "always build 1024": nothing the random draw could ever catch is
+   outside what 1024 already catches outright, so the randomness bought no
+   additional dead mutants — it only sold away determinism. And a
+   probabilistic red is worse than a flaky one for a different reason: the
+   normal reader reaction to a red CI run is "run it again", and running it
+   again is exactly what makes a probabilistic catch disappear — a false
+   acquittal for a real regression, not a false alarm for a fake one.
+
+   So: no draw, no range, one large fixed constant. 1024 is not tuned to
+   any observed mutant's threshold the way 45 was tuned to CLIENT_HEADERS'
+   own size — it is simply large enough that no plausible hardcoded wall
+   ("copy the first N", "drop index N", "cap total bytes") sits above it by
+   accident, and QA measured n = 64/256/512/1024/4096 all build and copy
+   through a real Context instantly, so there is no cost to picking a
+   number this large over a smaller one.
+
+   Known, measured limit of this approach, not fixed and not silent: a
+   wall placed AT OR ABOVE 1024 itself (e.g. "copy/keep only the first 1024
+   headers") is truly equivalent, not a gap anyone missed — this file
+   always builds exactly 1024, so a cap AT 1024 never truncates anything,
+   the same way no single fixed count ever fully closes this axis. Picking
+   a bigger constant shrinks the set of walls this misses but never closes
+   it to zero. */
+const RUNTIME_HEADER_COUNT = 1024;
+
+/** Builds `count` headers with names and values generated while this
+ *  function is RUNNING — nothing written before this call could have
+ *  hardcoded any of them. */
+function buildManyRuntimeHeaders(count) {
+  const headers = {};
+  for (let i = 0; i < count; i++) {
+    headers[`x-gen-${i}-${randomUUID()}`] = `v-${i}-${randomUUID()}`;
+  }
+  return headers;
+}
+
+test(`a request carrying ${RUNTIME_HEADER_COUNT} headers survives the copy header-for-header — every hardcoded wall below 1024 dies here, deterministically, on every single run, not just probabilistically on some of them`, () => {
+  const headers = buildManyRuntimeHeaders(RUNTIME_HEADER_COUNT);
+  const req = new NextRequest(url(), { headers });
+  const ctx = new Context(req, {});
+
+  const expected = clientHeaderEntriesExcludingRequestId(req.headers);
+  assert.equal(expected.length, RUNTIME_HEADER_COUNT, "sanity: NextRequest itself kept every one of the generated headers");
+
+  const actual = clientHeaderEntriesExcludingRequestId(ctx.init.request.headers);
+  assert.deepEqual(actual, expected, `all ${RUNTIME_HEADER_COUNT} runtime-generated headers must survive the copy — nothing dropped, nothing added, regardless of position or total byte length`);
+});
+
+/* Corrected, 0039 round 3: the previous version of this comment claimed
+   `new Headers(req.headers)` vs. a manual
+   `new Headers(); req.headers.forEach((v, k) => headers.set(k, v))` copy
+   were equivalent, on the theory that `set-cookie` — the one header name
+   `Headers` refuses to comma-join — "is a response header, never a
+   request one". That premise is WRONG, and it was checkable in eight
+   lines without any theorizing: `NextRequest` accepts `set-cookie` on a
+   REQUEST just fine, and undici's `Headers` keeps duplicate `set-cookie`
+   entries separate regardless of which side of the wire they are on — see
+   the measured example above the test below. "set-cookie only shows up on
+   responses" is a fact about HTTP convention, not a rule either `Context`
+   or `NextRequest` enforces, so it was never a mechanical impossibility —
+   just an assumption nobody had measured. Left as a dead mutant this way,
+   it would have been WORSE than an ordinary surviving one: a surviving
+   mutant is a known gap; a mutant wrongly written up as impossible is a
+   gap that whoever next edits context.ts:172-ish (0024's cookieJar is
+   scheduled to stand exactly there) would trust and not re-check. Fixed by
+   writing the test QA's counter-example asks for, below, instead of by
+   rewording the old claim into something narrower — a test in the suite
+   is the only form of "closed" that survives a future edit to this file.
+
+   The other mutant this comment used to bundle in — `RequestStore.claim`
+   (src/request-store.ts) returning `{ ...entry.values }` instead of
+   `entry.values` directly — is still not worth patching, but for a
+   narrower reason than originally written. See the corrected note beside
+   `claim` in request-store.test.mjs; the same correction applies there. */
+
+test("a request carrying set-cookie twice keeps BOTH values through the Headers-constructor copy — getSetCookie() never folds them into one, unlike every other header name", () => {
+  /* Measured directly on NextRequest, not assumed: undici's Headers treats
+     set-cookie as the one name it never comma-joins, on either a request
+     or a response — getSetCookie() below is the API the fetch spec adds
+     specifically to read all of them back separately. x-dup is here as a
+     control: an ORDINARY repeated header name IS comma-joined by the time
+     it reaches req.headers, which is exactly why a manual forEach+set copy
+     (which only ever sees one already-joined entry per ordinary name) and
+     the Headers-constructor copy cannot be told apart through anything
+     other than set-cookie. */
+  const req = new NextRequest(url(), {
+    headers: [
+      ["set-cookie", "a=1"],
+      ["set-cookie", "b=2"],
+      ["x-dup", "p, q"],
+    ],
+  });
+
+  const ctx = new Context(req, {});
+  assert.deepEqual(
+    ctx.init.request.headers.getSetCookie(),
+    ["a=1", "b=2"],
+    "both set-cookie values sent on the request must survive the copy — a forEach+set copy loses the first one, keeping only the last",
+  );
+
+  /* The control, actually checked (it never was, before 0039 round 4): an
+     ordinary repeated header name is ALREADY comma-joined into one entry
+     by the time it reaches req.headers, so both a forEach+set copy and the
+     Headers-constructor copy see the same single, already-joined value and
+     cannot disagree on it. Without this assertion "control" was just a word
+     next to a header nothing in the test ever read. */
+  assert.equal(
+    req.headers.get("x-dup"),
+    "p, q",
+    "sanity: an ordinary repeated header name must already be comma-joined by req.headers itself, or it is not the control this test claims it is",
+  );
+  assert.equal(
+    ctx.init.request.headers.get("x-dup"),
+    "p, q",
+    "the already-joined x-dup value must survive the copy unchanged, same as any other ordinary header",
+  );
+});
+
+test("init.request.headers is a copy of req.headers, not the same object — an alias would satisfy every get() above without ever copying anything", () => {
+  const ctx = new Context(new NextRequest(url(), { headers: CLIENT_HEADERS }), {});
+  assert.notStrictEqual(ctx.init.request.headers, ctx.req.headers);
+});
+
+test("a header Context DOES touch — x-ecosyrequest-id sent by the client — is still stripped on a local Context even once the copy fix is in place; the old promise is not loosened by the new one", () => {
+  const req = new NextRequest(url(), { headers: { ...CLIENT_HEADERS, [REQUEST_ID]: "client-sent" } });
+  const ctx = new Context(req, {});
+
+  assert.equal(ctx.init.request.headers.has(REQUEST_ID), false);
+  // and the rest of the copy still holds, so a fix that special-cased
+  // REQUEST_ID by wiping the whole Headers object (rather than deleting
+  // just this one key) would pass the assertion above and fail this one.
+  assert.equal(ctx.init.request.headers.get("cookie"), CLIENT_HEADERS.cookie);
+});
+
+/* ---------------------------------------------------------------------- */
 /* Coverage gaps named in 0021 that are not "must not" hunts: uri,        */
 /* baseUrl, env.                                                         */
 /* ---------------------------------------------------------------------- */
@@ -242,9 +597,36 @@ test("baseUrl returns the incoming request's origin", () => {
   assert.equal(ctx.baseUrl, "http://localhost:3000");
 });
 
-test("uri builds an absolute URL on baseUrl, with path and query from its options", () => {
+/* 0039 mục 2: renamed from "uri builds an absolute URL on baseUrl, with
+   path and query from its options". That name promised the base was
+   `baseUrl` specifically, but the request it ran on carried no query of
+   its own — so `base = this.baseUrl` (origin) and `base = this.url.href`
+   (full URL) produce the exact same string here, and the test could not
+   tell them apart. What this body actually proves is narrower: createUrl
+   correctly renders a pathname and a search object onto an absolute URL.
+   The two tests below are the ones that pin the origin-vs-href question. */
+test("uri renders pathname and a search object into an absolute URL, on a request whose own URL carries no query to leak", () => {
   const ctx = new Context(new NextRequest("http://localhost:3000/api/x"), {});
   assert.equal(ctx.uri({ pathname: "/foo", search: { a: 1 } }), "http://localhost:3000/foo?a=1");
+});
+
+test("uri({ pathname }) without a search option builds strictly on the origin — none of the request's own query string leaks through — dies on base: this.url.href replacing base: this.baseUrl", () => {
+  const ctx = new Context(new NextRequest("http://localhost:3000/api/x?leak=1"), {});
+  assert.equal(ctx.uri({ pathname: "/foo" }), "http://localhost:3000/foo");
+});
+
+/* 0039 mục 2 (round 2): a URL is wider than an origin in three parts, not
+   two. pathname and search are pinned by the two tests above; the third —
+   hash — was still open, and a request's own fragment survives all the way
+   into `this.url` (measured: `new URL(req.url).hash === "#frag"` on a
+   NextRequest built from a URL carrying one) exactly like its query string
+   does. The mutation this closes lives in `baseUrl` itself, not in `uri`:
+   `get baseUrl() { return this.url.origin; }` → `return this.url.origin +
+   this.url.hash;` survived every test above, because none of them ran on a
+   request that had a fragment to leak. */
+test("uri() with no arguments returns exactly the origin (with its trailing slash) — neither the request's own path, query string, nor fragment is carried over", () => {
+  const ctx = new Context(new NextRequest("http://localhost:3000/api/x?leak=1#frag"), {});
+  assert.equal(ctx.uri(), "http://localhost:3000/");
 });
 
 test("env returns process.env by reference, not a copy", () => {

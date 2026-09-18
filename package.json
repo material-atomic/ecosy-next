@@ -29,6 +29,7 @@
   "scripts": {
     "build": "tsc && rollup -c",
     "test": "yarn build && yarn test:run",
+    "pretest:run": "yarn build",
     "test:run": "node --import ./tests/hooks.mjs --test tests/*.test.mjs",
     "prepublishOnly": "yarn clean && yarn build",
     "clean": "rimraf dist"
