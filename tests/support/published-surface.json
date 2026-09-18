@@ -1,0 +1,52 @@
+{
+  "note": "Bề mặt công khai của entry gốc, đo từ tarball đã phát hành trên npm. Sinh lại: npm pack @ecosy/next@<v>, tar xzf, rồi surfaceOf(package/dist). 1.0.2 và 1.1.0 bất biến trên npm, nên hai tập này là hằng số. `2.0.0` không mang removedIn200/addedIn200 riêng — nó là bên so sánh, đọc từ dist/ hiện tại.",
+  "1.0.2": {
+    "rootModules": 14,
+    "names": 70,
+    "removedIn200": [
+      "IInstrumentBuilder",
+      "Instrument",
+      "InstrumentBase",
+      "InstrumentConfig",
+      "InstrumentErrorHandler",
+      "InstrumentHandler",
+      "InstrumentParam"
+    ],
+    "addedIn200": [
+      "ContextValues",
+      "CookieForwarding",
+      "CookieJar",
+      "CookieJarOptions",
+      "CsrfContext",
+      "CsrfGuardOptions",
+      "CsrfPort",
+      "CsrfPortClass",
+      "IdentityPort",
+      "cookieJar",
+      "csrfGuard",
+      "csrfOrigin"
+    ]
+  },
+  "1.1.0": {
+    "rootModules": 16,
+    "names": 81,
+    "removedIn200": [
+      "IInstrumentBuilder",
+      "Instrument",
+      "InstrumentBase",
+      "InstrumentConfig",
+      "InstrumentErrorHandler",
+      "InstrumentHandler",
+      "InstrumentParam",
+      "SessionPort"
+    ],
+    "addedIn200": [
+      "ContextValues",
+      "IdentityPort"
+    ]
+  },
+  "2.0.0": {
+    "rootModules": 15,
+    "names": 75
+  }
+}
