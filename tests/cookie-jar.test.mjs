@@ -291,6 +291,37 @@ test("delete() always writes maxAge: 0 to the underlying store, and passes every
   assert.deepEqual(Object.keys(last.options), ["maxAge"], "no other option leaks in when the caller passed none");
 });
 
+/* 0024 Reviewer picked two mutants in set() and both survived 145/145 green:
+   deleting the `store.set(name, value, options)` line outright (cookies
+   would go into `written` — so get()/forward() still looked right — but the
+   response would never carry a Set-Cookie at all), and downgrading its
+   third argument to `{}` (httpOnly/secure/sameSite/path silently dropped,
+   shipping the session cookie bare). Both survived because §5 above reads
+   `sets()` for delete()'s write to the store and nothing anywhere read
+   `sets()` for set()'s — the equivalent path, touched more often by callers,
+   had no assertion on the one place where dropping the call or the options
+   is actually observable. This is that assertion, mirroring §5 exactly. */
+test("set() always writes the caller's name, value and EVERY option to the underlying store — unabbreviated, and the call itself is never skipped", async () => {
+  reset();
+  const forwarding = fakeForwarding(null);
+  const jar = await cookieJar(forwarding);
+
+  await jar.set("sid", "abc", { path: "/", httpOnly: true, secure: true, sameSite: "lax" });
+  let last = sets().at(-1);
+  assert.ok(last, "store.set() must actually be called — written()/forward() alone are not enough: a browser only gets Set-Cookie from this call");
+  assert.equal(last.name, "sid");
+  assert.equal(last.value, "abc");
+  assert.deepEqual(
+    last.options,
+    { path: "/", httpOnly: true, secure: true, sameSite: "lax" },
+    "every option the caller passed to set() must reach the underlying store untouched — downgrading to {} would silently strip httpOnly/secure/sameSite/path from the Set-Cookie the browser receives, with get()/forward() both still looking correct since neither reads from the store",
+  );
+
+  await jar.set("sid2", "v2", {});
+  last = sets().at(-1);
+  assert.deepEqual(Object.keys(last.options), [], "an empty options object passed by the caller must reach the store as empty, not spuriously gain keys");
+});
+
 /* ---------------------------------------------------------------------- */
 /* 6. The proxy→route chain never drops a cookie, at EITHER way a          */
 /*    middleware can end — the whole reason this task sits after 0023.     */
