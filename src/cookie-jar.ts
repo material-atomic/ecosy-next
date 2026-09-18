@@ -60,6 +60,16 @@ function serialiseCookieHeader(values: Map<string, string | null>, original: str
  * - **Server Component**: reads only. Next refuses writes there; a session or
  *   CSRF module that writes from a page throws Next's own error.
  *
+ * Passing the context is what makes the proxy case work; leaving it out
+ * fails quietly. `cookieJar()` with no argument still compiles in a
+ * proxy and still writes `Set-Cookie`, but the route serving the same
+ * request sees nothing — the exact problem this exists to solve, back
+ * again with no warning.
+ *
+ * Each call builds its own jar. A second `cookieJar()` in the same
+ * request does not see what the first one wrote; it reads the request's
+ * own cookies again.
+ *
  * Within one jar a value written is read back at once, before any response.
  *
  * ```ts
