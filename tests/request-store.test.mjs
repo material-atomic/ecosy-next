@@ -190,3 +190,34 @@ test("write() to an id exactly at its previous entry's expiry boundary starts fr
 
   assert.deepEqual(RequestStore.peek("rs-merge-boundary"), { new: "fresh" });
 });
+
+/* ---------------------------------------------------------------------- */
+/* 14. 0022 adds a "$" prefix to every key one layer up, in Context, and  */
+/*     specifically NOT here — the boundary the task draws is that a key */
+/*     arriving at write()/peek() already carries the prefix, so a       */
+/*     literal string like "$__proto__" must behave as nothing more      */
+/*     than an ordinary string key at this layer. It already does,       */
+/*     unchanged: only the bare string "__proto__" ever triggers the     */
+/*     accessor, and "$__proto__" is a different string. This documents  */
+/*     that contract without touching request-store.ts.                 */
+/* ---------------------------------------------------------------------- */
+
+test('write() and peek() treat "$__proto__" as an ordinary key, not a prototype write — only the bare "__proto__" string triggers that accessor', () => {
+  RequestStore.write("rs-dollar-proto", "$__proto__", { a: 1 });
+
+  const stored = RequestStore.peek("rs-dollar-proto");
+  assert.deepEqual(stored, { $__proto__: { a: 1 } });
+  assert.equal(Object.getPrototypeOf(stored), Object.prototype, "the entry's own prototype was not touched by a key that merely starts with the same characters");
+
+  /* The claim above — "only the bare __proto__ string triggers that accessor" —
+     was never actually exercised: the test only ever wrote "$__proto__". Prove
+     the contrast by writing the bare string too, on a fresh id, and showing it
+     DOES reach the accessor: values["__proto__"] = X sets the entry's own
+     [[Prototype]] rather than creating an own, enumerable "__proto__" key. This
+     is exactly why the prefix has to be added one layer up, in Context, before
+     a key ever reaches this file's plain `values[key] = value`. */
+  RequestStore.write("rs-bare-proto", "__proto__", { a: 1 });
+  const bareStored = RequestStore.peek("rs-bare-proto");
+  assert.deepEqual(Object.keys(bareStored), [], "the bare __proto__ write should not have created an own enumerable key");
+  assert.equal(Object.getPrototypeOf(bareStored).a, 1, "the bare __proto__ write should have reached the accessor and become the entry's own prototype");
+});

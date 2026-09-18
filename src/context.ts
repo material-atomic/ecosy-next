@@ -10,6 +10,19 @@ import { REQUEST_ID, RequestStore } from "./request-store";
 const MEMORY_KEY = Symbol.for("@ECOSY/CONTEXT_MEMORY");
 const PROXY_KEY = Symbol.for("@ECOSY/CONTEXT_PROXY");
 
+/* Every key a caller gives to Context.set() goes into the bag under this
+   prefix, not under its own name. A key named `__proto__` assigned straight
+   into an object writes the object's prototype, not a stored key — and
+   Object.prototype has no property starting with `$` (constructor,
+   hasOwnProperty, isPrototypeOf, propertyIsEnumerable, toLocaleString,
+   toString, valueOf, __proto__, __defineGetter__, __defineSetter__,
+   __lookupGetter__, __lookupSetter__ — none of them), so the prefix turns
+   that whole class of key into an ordinary own property. Added at EXACTLY
+   this layer: a key that has passed through RequestStore already carries the
+   prefix, so RequestStore.write's own `values[key] = value` stays safe with
+   no change of its own. */
+const KEY_PREFIX = "$";
+
 const _global = globalThis as (typeof globalThis & {
   [MEMORY_KEY]: Map<string, any>;
 })
@@ -96,6 +109,22 @@ export type BaseUrlOptions = Omit<UrlOptions, "base">;
  *   request to take — a Proxy's context.
  * - `local`: held on the context itself — a Route's, starting from whatever the
  *   proxy handed over.
+ *
+ * Invariant this type does not enforce, and never checks at runtime: every key
+ * already inside `local` must already carry {@link Context}'s `$` prefix. The
+ * only two things this constructor argument is ever supposed to receive on the
+ * `local` branch are `RequestStore.claim()`'s return value — already prefixed,
+ * since it only ever holds what `Context.set` wrote — or the literal `{}`
+ * default. Constructing a `Context` by hand with a `local` bag that already
+ * has bare (unprefixed) keys in it is a fourth way into the bag that this
+ * module's three-line fix does not see: a seeded `{ local: { userId: "u1" } }`
+ * sits under the bare name `userId`, but `get("userId")` only ever looks under
+ * `$userId` — so the seed is invisible from the first read, not stuck. It
+ * silently answers `undefined` as if the key had never been set, and stays
+ * that way until something calls `Context.set("userId", ...)`, which adds a
+ * second, `$`-prefixed entry (`{ userId: "u1", $userId: "u2" }`) and only then
+ * makes `get("userId")` answer at all. Nothing here stops that; it is a
+ * contract on whoever builds a `local` value, not a check `Context` performs.
  */
 export type ContextValues = { shared: string } | { local: Record<string, unknown> };
 
@@ -201,6 +230,19 @@ export class Context<Env extends LiteralObject = LiteralObject> {
    * In a {@link Proxy} the value waits for the {@link Route} that serves the
    * request, which takes it once; unclaimed, it expires after a minute.
    *
+   * The key is not stored under the name you give it: it is stored under that
+   * name with a `$` in front, because a key named `__proto__` assigned into a
+   * plain object writes that object's prototype instead of storing anything.
+   * You never write or read the `$` — `set` and `get` both add it themselves,
+   * so `get("userId")` reads back what `set("userId", …)` wrote.
+   *
+   * There is one place you do see it, and it is worth knowing before it
+   * surprises you: a context's `values` is an ordinary enumerable property, so
+   * logging the context — the first thing most people do inside a `filter` or
+   * a {@link Route.error} hook, both of which are handed the context — or
+   * calling `JSON.stringify(ctx)`, prints `{"local":{"$userId":"u1"}}`. Those
+   * are the stored keys, not a second set of keys beside yours.
+   *
    * @example
    * ctx.set("userId", payload.sub);
    *
@@ -209,9 +251,9 @@ export class Context<Env extends LiteralObject = LiteralObject> {
    */
   set(key: string, value: unknown) {
     if ("shared" in this.values) {
-      RequestStore.write(this.values.shared, key, value);
+      RequestStore.write(this.values.shared, KEY_PREFIX + key, value);
     } else {
-      this.values.local[key] = value;
+      this.values.local[KEY_PREFIX + key] = value;
     }
   }
 
@@ -223,7 +265,7 @@ export class Context<Env extends LiteralObject = LiteralObject> {
    */
   get<DataType>(key: string) {
     const values = "shared" in this.values ? RequestStore.peek(this.values.shared) : this.values.local;
-    return values?.[key] as DataType | undefined;
+    return values?.[KEY_PREFIX + key] as DataType | undefined;
   }
 
   /**
