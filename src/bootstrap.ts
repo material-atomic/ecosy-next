@@ -87,6 +87,13 @@ class BootstrapBuilder<Injects extends InjectMap = {}> implements IBootstrapBuil
   register(key: string, fn: BootstrapInitialize<Injects>): IBootstrapBuilder<Injects> {
     return this.push(async (context) => {
       const result = await fn(context);
+      /* Storing `undefined` too (dropping this guard) is not observable
+         through the public surface: `Bootstrap.get` is `map.get(key)`, and a
+         Map's `.get()` returns `undefined` both for a key never set and for
+         one set to `undefined` explicitly — there is no `has()` on
+         BootstrapFactory to tell the two apart. Measured in
+         tests/bootstrap.test.mjs's own comment on this: that mutant leaves
+         the whole suite green. */
       if (result !== undefined) {
         set(key, result);
       }
@@ -121,18 +128,6 @@ export interface BootstrapFactory {
   boost(loader: () => Promise<any>): Promise<void>;
 }
 
-/**
- * Ordered startup, wired into `instrumentation.ts`.
- *
- * @example
- * export const bootstrap = Bootstrap({})
- *   .register("db", async () => DataSource.entities([User]).initialize(config))
- *   .register("schedule", async () => new AppSchedule().start())
- *   .start(async () => console.log("ready"));
- *
- * // instrumentation.ts
- * export const { register } = Instrument.nodejs(() => bootstrap.init()).start();
- */
 const BootstrapImpl = function <Injects extends InjectMap = {}>(injects?: Injects): IBootstrapBuilder<Injects> {
   return new BootstrapBuilder<Injects>(injects ?? ({} as Injects));
 } as BootstrapFactory;
@@ -185,4 +180,18 @@ BootstrapImpl.boost = async function (loader: () => Promise<any>) {
   }
 };
 
+/**
+ * Ordered startup, wired into `instrumentation.ts`.
+ *
+ * @example
+ * export const bootstrap = Bootstrap({})
+ *   .register("db", async () => DataSource.entities([User]).initialize(config))
+ *   .register("schedule", async () => new AppSchedule().start())
+ *   .start(async () => console.log("ready"));
+ *
+ * // instrumentation.ts
+ * export async function register() {
+ *   await bootstrap.init();
+ * }
+ */
 export const Bootstrap = BootstrapImpl;
