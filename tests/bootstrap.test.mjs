@@ -125,16 +125,43 @@ test("push() never mutates the builder it was called on — two branches built f
   assert.deepEqual(seenA, [], "the base builder itself must still have zero steps — it was never supposed to have gained either branch's step");
 });
 
-/* Task mutation 5 — register() dropping `if (result !== undefined)` so it
-   also stores an explicit `undefined` — has no public-API test here on
-   purpose, not by oversight. Bootstrap.get(key) is `map.get(key) as T |
-   undefined`, and a JS Map returns `undefined` from .get() both when a key
-   was never set AND when it was set to `undefined` explicitly; there is no
-   `has()` on BootstrapFactory to tell the two apart. Measured, not assumed:
-   running that mutant against every test in this file, including both above,
-   leaves the whole suite green — the same result a correct build gives. This
-   mutant is recorded here rather than test-covered because there is nothing
-   for a test to observe through the surface this package actually exports. */
+/* ---------------------------------------------------------------------- */
+/* 2b. register() dropping `if (result !== undefined)` (task mutation 5)   */
+/*     WAS wrongly recorded here as a live mutant with "not observable      */
+/*     through the public surface" — that reasoning only holds within a    */
+/*     single init() call. Across two calls, exactly what a Next hot        */
+/*     reload does by re-running instrumentation.ts's register(), it is    */
+/*     observable through Bootstrap.get alone: a step that opens something */
+/*     once and returns nothing once it is already open must not have its  */
+/*     earlier result erased by the second, empty return. Test 1's hot-    */
+/*     reload assertion only checked `doesNotReject` — it never checked     */
+/*     what Bootstrap.get still held afterwards, which is exactly where     */
+/*     this mutant hid. */
+/* ---------------------------------------------------------------------- */
+
+test("a step returning undefined stores nothing — a second init() call whose step is already-open-so-returns-nothing (a hot reload) must not erase what the first init() call stored under the same key", async () => {
+  let opened = null;
+
+  const bootstrap = Bootstrap({})
+    .register("db", async () => {
+      if (opened) return; // hot reload: the resource is already open, nothing new to store
+      opened = { name: "db" };
+      return opened;
+    })
+    .start();
+
+  await bootstrap.init();
+  assert.deepEqual(Bootstrap.get("db"), { name: "db" }, "first init() must store what the step returned");
+
+  // Simulate a hot reload calling register() again: the same builder's
+  // init() runs a second time, and this time the step returns undefined.
+  await bootstrap.init();
+  assert.deepEqual(
+    Bootstrap.get("db"),
+    { name: "db" },
+    "second init() call's step returned undefined (already open); Bootstrap.get must still read back the value the FIRST call stored, not undefined — this is the JSDoc's promise \"A step returning undefined stores nothing\", read from the store, not just from not throwing",
+  );
+});
 
 /* ---------------------------------------------------------------------- */
 /* 3. Public surface NEVER mentions `Instrument` again — two tiers, since   */
@@ -164,14 +191,36 @@ test('no file under dist/ contains the literal, capitalised string "Instrument" 
 /*    actually PRESENT, verbatim, in the .d.ts a user's editor reads.      */
 /*    Without this, "fixing the wording" and "fixing nothing because the   */
 /*    docblock never reached dist/ in the first place" look identical.     */
+/*                                                                          */
+/*    Round-2 fix: the previous version of this test named itself          */
+/*    "verbatim" but only checked three substrings — deleting the two      */
+/*    .register(...) lines from the example still left it green (measured */
+/*    by the Reviewer of 0030's first round). The name was a promise the   */
+/*    body did not keep, so the body is widened here to compare the WHOLE  */
+/*    @example block, line for line, against the block in src/bootstrap.ts */
+/*    — not the other way around (narrowing the name) — because comparing  */
+/*    the full block is cheap and closes the gap outright instead of just  */
+/*    describing it honestly.                                              */
 /* ---------------------------------------------------------------------- */
 
-test("dist/bootstrap.d.ts contains the new, runnable @example verbatim — the whole reason the docblock was relocated onto the exported `Bootstrap` declaration", () => {
+test("dist/bootstrap.d.ts contains the new, runnable @example verbatim, the WHOLE block compared line for line — not just three substrings that a truncated example would still satisfy", () => {
   const declaration = readFileSync(join(distDir, "bootstrap.d.ts"), "utf8");
-  assert.ok(declaration.includes("@example"), "the docblock's @example tag must reach dist/bootstrap.d.ts at all");
+
+  const expectedBlock = [
+    " * @example",
+    ' * export const bootstrap = Bootstrap({})',
+    ' *   .register("db", async () => DataSource.entities([User]).initialize(config))',
+    ' *   .register("schedule", async () => new AppSchedule().start())',
+    ' *   .start(async () => console.log("ready"));',
+    " *",
+    " * // instrumentation.ts",
+    " * export async function register() {",
+    " *   await bootstrap.init();",
+    " * }",
+  ].join("\n");
+
   assert.ok(
-    declaration.includes("export async function register() {"),
-    "the new instrumentation.ts-shaped example must be present verbatim in the compiled declaration, not just in src/",
+    declaration.includes(expectedBlock),
+    `the entire @example block, unabridged, must appear in dist/bootstrap.d.ts exactly as written in src/bootstrap.ts — a partial match (e.g. missing either .register() line, or missing the instrumentation.ts half) must fail this assertion. Declaration file:\n${declaration}`,
   );
-  assert.ok(declaration.includes("await bootstrap.init();"), "the example's body — the actual call a reader is meant to copy — must be present too");
 });

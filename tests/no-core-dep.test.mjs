@@ -44,10 +44,12 @@ test("package.json never lists @ecosy/core in dependencies or peerDependencies",
 /* The task's own wording for these two checks is a blunt "the string
    `@ecosy/core` does not appear anywhere" — but that literal reading is
    unsatisfiable together with two OTHER explicit orders in this same task:
-   `src/cookie-jar.ts` is sealed (task 0024, byte-identical with
-   release/1.1.0, not to be touched) and its own docblock already says
-   `@ecosy/core/session` and `@ecosy/core/csrf` in prose, documenting exactly
-   why this package imports neither; and `csrf.ts`'s `CsrfPort` docblock —
+   `src/cookie-jar.ts`'s own docblock already says `@ecosy/core/session` and
+   `@ecosy/core/csrf` in prose, documenting exactly why this package imports
+   neither (this file no longer claims cookie-jar.ts is byte-identical with
+   release/1.1.0 — 0030's `0cd185a` deliberately added JSDoc to it, on
+   purpose and said so in that commit; only the reason for THIS check, the
+   prose mention, still holds); and `csrf.ts`'s `CsrfPort` docblock —
    copied verbatim from release/1.1.0, "KHÔNG đổi một ký tự nào" — carries
    the same kind of mention for the same reason. Both predate this task and
    neither is an import.

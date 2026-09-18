@@ -87,13 +87,18 @@ class BootstrapBuilder<Injects extends InjectMap = {}> implements IBootstrapBuil
   register(key: string, fn: BootstrapInitialize<Injects>): IBootstrapBuilder<Injects> {
     return this.push(async (context) => {
       const result = await fn(context);
-      /* Storing `undefined` too (dropping this guard) is not observable
-         through the public surface: `Bootstrap.get` is `map.get(key)`, and a
-         Map's `.get()` returns `undefined` both for a key never set and for
-         one set to `undefined` explicitly — there is no `has()` on
-         BootstrapFactory to tell the two apart. Measured in
-         tests/bootstrap.test.mjs's own comment on this: that mutant leaves
-         the whole suite green. */
+      /* This guard is what a hot reload relies on. A step often opens a
+         resource once and, on the next call to init() (Next re-running the
+         registered module after a reload), just checks it is already open
+         and returns nothing. Without this check, that second `undefined`
+         would overwrite the Map entry from the first run and Bootstrap.get
+         would go back to returning nothing for a resource that is, in
+         fact, still open — silently, since nothing throws. Guarding here
+         is what keeps the earlier value in place instead. Measured across
+         two calls to init() in tests/bootstrap.test.mjs — that is the only
+         shape in which dropping this guard is observable through
+         Bootstrap.get; within a single init() call it is not, because
+         nothing else in this file ever reads the Map before this line runs. */
       if (result !== undefined) {
         set(key, result);
       }
