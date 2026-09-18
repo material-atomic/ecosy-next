@@ -1099,3 +1099,309 @@ test('for each of 200 seeded random key pairs, differing at exactly one random p
    prefix of it. 1500 was chosen as the generator's target cap to sit
    comfortably past every length QA measured this round (259, 260, 512,
    603, 605) with headroom, not because 1500 is itself meaningful. */
+
+/* ---------------------------------------------------------------------- */
+/* 16. 0023 phần A: next() carries this.init, not a stale copy of the      */
+/*     client's raw headers. Sections continue past 15 rather than         */
+/*     re-using 7/8 — those numbers were already spent (see the comment    */
+/*     at the top of this file's history and Reviewer 0039's note on the   */
+/*     broken numbering); appended here, at the end, rather than inside    */
+/*     the ~340-line header-copy block above (0039 mục 1), because that    */
+/*     block is about the CONSTRUCTOR seeding init from req.headers — a    */
+/*     different claim from this one, which is entirely about next(). This */
+/*     section was, until this task, deliberately empty: see this file's   */
+/*     own opening comment ("ctx.next() is deliberately untested").        */
+/* ---------------------------------------------------------------------- */
+
+test("ctx.next() with no arguments carries every header setHeader placed — a brand-new name, one overriding what the client sent, mixed case, an explicit empty string, and cookie", () => {
+  const req = new NextRequest(url(), {
+    headers: {
+      "x-client-only": "from-client",
+      cookie: "session=abc",
+    },
+  });
+  const ctx = new Context(req, {});
+  ctx.setHeader("x-brand-new", "mw-value");
+  ctx.setHeader("x-client-only", "overridden-by-mw"); // client sent this name too — middleware must win
+  ctx.setHeader("X-User", "u-1"); // set under one case
+  ctx.setHeader("x-empty", "");
+  ctx.setHeader("cookie", "session=abc; extra=1"); // 0024 (cookieJar) rides exactly this path
+
+  const out = forwarded(ctx.next());
+
+  assert.equal(out.get("x-brand-new"), "mw-value", "a brand-new header setHeader added must be forwarded");
+  assert.equal(out.get("x-client-only"), "overridden-by-mw", "setHeader must win over what the client sent for the same name");
+  assert.equal(out.get("x-user"), "u-1", "read back under lowercase");
+  assert.equal(out.get("X-USER"), "u-1", "read back under yet another case — Headers must not distinguish case on either the write or the read side, proven rather than assumed");
+  assert.equal(out.has("x-empty"), true, "an explicitly empty value is PRESENT, not the same as never having been set");
+  assert.equal(out.get("x-empty"), "", "the empty value itself must survive, not be coerced into something else");
+  assert.equal(out.get("cookie"), "session=abc; extra=1", "cookie specifically");
+});
+
+test("ctx.next() with no arguments never keeps a header a middleware deleted from this.init — the sharpest case, and the reason the base is this.init and not a merge onto this.req", () => {
+  const req = new NextRequest(url(), { headers: { "x-secret": "leak" } });
+  const ctx = new Context(req, {});
+  ctx.init.request.headers.delete("x-secret");
+
+  const out = forwarded(ctx.next());
+  assert.equal(out.has("x-secret"), false, "a header the client sent, explicitly deleted by a middleware, must not be forwarded — a base glued from this.req plus a merge of this.init can only ADD, never remove, so it fails exactly here");
+});
+
+test("the init argument to ctx.next() still wins over setHeader for the same header name, and a header present in only one of the two still goes out", () => {
+  const ctx = new Context(new NextRequest(url()), {});
+  ctx.setHeader("x", "a");
+  ctx.setHeader("only-in-setHeader", "sh-value");
+
+  const out = forwarded(ctx.next({ request: { headers: new Headers({ x: "b", "only-in-init": "init-value" }) } }));
+
+  assert.equal(out.get("x"), "b", "the init argument's value must win over setHeader's for the same name — the caller speaking LAST through next() wins");
+  assert.equal(out.get("only-in-setHeader"), "sh-value", "a header only setHeader placed must still go out");
+  assert.equal(out.get("only-in-init"), "init-value", "a header only the init argument placed must still go out");
+});
+
+test("REQUEST_ID on the way out of ctx.next() never comes from the client or a middleware — only from this context's own shared id, or not at all, on either branch and through either setHeader or the init argument", () => {
+  const shared1 = new Context(new NextRequest(url()), {}, undefined, { shared: "real-shared-id" });
+  shared1.setHeader(REQUEST_ID, "made-up");
+  assert.equal(forwarded(shared1.next()).get(REQUEST_ID), "real-shared-id", "setHeader(REQUEST_ID, ...) on a shared context must lose to this.values.shared");
+
+  const shared2 = new Context(new NextRequest(url()), {}, undefined, { shared: "real-shared-id-2" });
+  const viaInitShared = forwarded(shared2.next({ request: { headers: new Headers({ [REQUEST_ID]: "made-up-via-init" }) } })).get(REQUEST_ID);
+  assert.equal(viaInitShared, "real-shared-id-2", "passing REQUEST_ID through the init argument must lose to this.values.shared too — it is checked AFTER the init merge, not before");
+
+  const local1 = new Context(new NextRequest(url(), { headers: { [REQUEST_ID]: "client-sent" } }), {});
+  local1.setHeader(REQUEST_ID, "made-up");
+  assert.equal(forwarded(local1.next()).has(REQUEST_ID), false, "a context not on the shared branch must never forward REQUEST_ID, even if a middleware setHeader'd it");
+
+  const local2 = new Context(new NextRequest(url()), {});
+  const viaInitLocal = forwarded(local2.next({ request: { headers: new Headers({ [REQUEST_ID]: "made-up-via-init-local" }) } })).has(REQUEST_ID);
+  assert.equal(viaInitLocal, false, "passing REQUEST_ID through the init argument on a local context must also be stripped");
+});
+
+test("calling ctx.next() a second time, with no arguments, never sees a header that only the FIRST call's init argument supplied", () => {
+  /* Only observable with two calls on the SAME context — see the mutation
+     floor's own note on this: a base built as `new Headers(this.init.request
+     .headers)` copies fresh on every call; a base that reused this.init's
+     Headers object directly would let the first call's merge permanently
+     graft onto this.init, and a later argument-less call would still be
+     carrying it. */
+  const ctx = new Context(new NextRequest(url()), {});
+  ctx.setHeader("base", "b1");
+
+  const first = forwarded(ctx.next({ request: { headers: new Headers({ "only-in-first-call": "f1" }) } }));
+  assert.equal(first.get("only-in-first-call"), "f1", "sanity: the first call's own init argument must appear in the first call's own output");
+
+  const second = forwarded(ctx.next());
+  assert.equal(second.has("only-in-first-call"), false, "a header supplied only through the FIRST call's init argument must not bleed into a second, argument-less call");
+  assert.equal(second.get("base"), "b1", "setHeader's own value must still be there on the second call");
+});
+
+test("two ways of ending a middleware — `ctx.setHeader(...); return ctx.next();` versus `ctx.setHeader(...);` with no return at all — forward the exact same set of headers, through every way a Proxy can be built", async () => {
+  const withReturn = (ctx) => { ctx.setHeader("x-a", "1"); return ctx.next(); };
+  const withoutReturn = (ctx) => { ctx.setHeader("x-a", "1"); };
+  const noop = () => {};
+
+  async function compare(build) {
+    const resReturn = await build(withReturn)(new NextRequest(url()), payload());
+    const resNoReturn = await build(withoutReturn)(new NextRequest(url()), payload());
+    const a = forwarded(resReturn);
+    const b = forwarded(resNoReturn);
+
+    assert.deepEqual([...a.keys()].sort(), [...b.keys()].sort(), "the two middleware endings must forward the exact same set of header NAMES");
+    for (const key of a.keys()) {
+      /* Each call mints its own fresh, signed request id — the two ids are
+         SUPPOSED to differ from each other; only their presence was checked
+         above. Comparing REQUEST_ID's VALUE across the two calls would be
+         asserting something the id's own design says should be false. */
+      if (key === REQUEST_ID) continue;
+      assert.equal(a.get(key), b.get(key), `header "${key}" must carry the same value both ways`);
+    }
+  }
+
+  await compare((fn) => Proxy.use(fn).proxy());
+  await compare((fn) => Proxy.use(fn).proxy(noop)); // .use(f).proxy(g) — g runs only when f falls through
+  await compare((fn) => Proxy(fn));
+});
+
+test("0023 §6, end-to-end through dist: ctx.next() never drops a client header a middleware never touched — cookie, authorization and a custom header all ride through to the Route, alongside whatever the middleware itself set", async () => {
+  /* The middleware below touches none of cookie/authorization/x-client-custom
+     and returns nothing, so this exercises the IMPLICIT fallthrough path —
+     proxy.ts's own `return context.res.next(context.init)` at the end of
+     `serve()` — not a `ctx.next()` call written inside the middleware. Both
+     paths funnel through the same `next()`/`Res.next`, but this is the shape
+     0024's cookieJar and 0025's csrf are actually going to run through. */
+  const proxy = Proxy({}).use((ctx) => { ctx.setHeader("x-mw-added", "mw-1"); });
+
+  const clientHeaders = {
+    cookie: "session=abc123",
+    authorization: "Bearer tok-1",
+    "x-client-custom": "custom-1",
+  };
+  const passed = await proxy(new NextRequest(url("/page"), { headers: clientHeaders }), payload());
+  const nextHeaders = forwarded(passed);
+
+  const { GET } = Route().get((ctx) => ({
+    cookie: ctx.req.headers.get("cookie"),
+    authorization: ctx.req.headers.get("authorization"),
+    custom: ctx.req.headers.get("x-client-custom"),
+    mwAdded: ctx.req.headers.get("x-mw-added"),
+  }));
+
+  const res = await GET(new NextRequest(url(), { headers: nextHeaders }), payload());
+  const data = (await res.json()).data;
+
+  assert.equal(data.cookie, "session=abc123", "cookie the client sent, never touched by the middleware, must reach the Route");
+  assert.equal(data.authorization, "Bearer tok-1", "authorization the client sent, never touched by the middleware, must reach the Route");
+  assert.equal(data.custom, "custom-1", "a custom client header never touched by the middleware must reach the Route");
+  assert.equal(data.mwAdded, "mw-1", "the header the middleware itself set must ALSO reach the Route, alongside the untouched client headers");
+});
+
+/* ---------------------------------------------------------------------- */
+/* 17. 0023 phần C: a bare key in a hand-built `local` seed is prefixed    */
+/*     in place before the constructor finishes — the "fourth way in"      */
+/*     ContextValues' own comment, and the constructor's normalization     */
+/*     loop, describe.                                                     */
+/* ---------------------------------------------------------------------- */
+
+const BARE_KEY_CASES = [
+  {
+    axis: "a single bare key with no prefixed counterpart",
+    build: () => ({ userId: "u1" }),
+    check: (ctx) => assert.equal(ctx.get("userId"), "u1"),
+    expectedKeys: ["$userId"],
+  },
+  {
+    axis: "a key that already carries the prefix",
+    build: () => ({ $userId: "u1" }),
+    check: (ctx) => {
+      assert.equal(ctx.get("userId"), "u1");
+      assert.equal(ctx.get("$userId"), undefined, 'get("$userId") would need a caller key of literally "$userId" — a seed of {"$userId":...} means the key "userId", already prefixed, not the key "$userId"');
+    },
+    expectedKeys: ["$userId"],
+  },
+  {
+    axis: "a bare key colliding with its own already-prefixed counterpart in the same seed",
+    build: () => ({ userId: "u1", $userId: "u2" }),
+    check: (ctx) => assert.equal(ctx.get("userId"), "u2", "the already-prefixed value must win over the bare one"),
+    expectedKeys: ["$userId"],
+  },
+  {
+    axis: "an empty seed",
+    build: () => ({}),
+    check: (ctx) => assert.equal(ctx.get("x"), undefined),
+    expectedKeys: [],
+  },
+  {
+    axis: '"__proto__" as an own enumerable key, built via JSON.parse so it lands as data instead of setting the prototype',
+    build: () => JSON.parse('{"__proto__":1}'),
+    check: (ctx) => {
+      assert.equal(ctx.get("__proto__"), 1);
+      assert.equal({}.polluted, undefined, "normalizing a key literally named __proto__ must never touch Object.prototype");
+    },
+    expectedKeys: ["$__proto__"],
+  },
+  {
+    axis: "keys that shadow Object.prototype method names",
+    build: () => ({ constructor: 1, toString: 2 }),
+    check: (ctx) => {
+      assert.equal(ctx.get("constructor"), 1);
+      assert.equal(ctx.get("toString"), 2);
+    },
+    expectedKeys: ["$constructor", "$toString"],
+  },
+  {
+    axis: "the empty string as a key",
+    build: () => ({ "": 1 }),
+    check: (ctx) => assert.equal(ctx.get(""), 1),
+    expectedKeys: ["$"],
+  },
+  {
+    axis: 'a seed key of literally "$" — the empty caller key, already prefixed',
+    build: () => ({ "$": 1 }),
+    check: (ctx) => assert.equal(ctx.get(""), 1),
+    expectedKeys: ["$"],
+  },
+  {
+    axis: "an inherited key sitting on the seed's prototype, never its own",
+    build: () => {
+      const seed = Object.create({ inherited: 1 });
+      seed.a = 2;
+      return seed;
+    },
+    check: (ctx) => {
+      assert.equal(ctx.get("a"), 2);
+      assert.equal(ctx.get("inherited"), undefined, "an inherited key must never be pulled into the bag as if it were the caller's own");
+    },
+    expectedKeys: ["$a"],
+  },
+  {
+    axis: "a key whose value is undefined — present, but empty",
+    build: () => ({ a: undefined }),
+    check: (ctx) => assert.equal(ctx.get("a"), undefined),
+    expectedKeys: ["$a"],
+  },
+];
+
+test('a bare key in a hand-built `local` seed is prefixed in place before the constructor finishes — 10 cases, each pinning both get() and the seed\'s own physical keys afterward', () => {
+  for (const { axis, build, check, expectedKeys } of BARE_KEY_CASES) {
+    const seed = build();
+    const ctx = new Context(new NextRequest(url()), {}, undefined, { local: seed });
+    check(ctx);
+    assert.deepEqual(
+      Object.keys(ctx.values.local).sort(),
+      [...expectedKeys].sort(),
+      `[${axis}] unexpected physical own keys after normalization — get() alone would not have caught a bare key left sitting alongside its prefixed twin`,
+    );
+  }
+});
+
+test("the normalization loop never touches the shared branch: set/get still go through RequestStore, and building with only `shared` never throws even though values.local does not exist", () => {
+  const id = "ctx-c-shared-untouched";
+  const ctx = new Context(new NextRequest(url()), {}, undefined, { shared: id });
+  ctx.set("userId", "u1");
+  assert.equal(ctx.get("userId"), "u1");
+  assert.deepEqual(Object.keys(RequestStore.peek(id)), ["$userId"]);
+});
+
+test("building a Context with no fourth argument at all still normalizes the (empty) default bag without throwing", () => {
+  const ctx = new Context(new NextRequest(url()), {});
+  assert.deepEqual(Object.keys(ctx.values.local), []);
+});
+
+test("destroy() still leaves the seed object itself with no own keys, even after an extra ctx.set() lands on top of it after construction", () => {
+  const seed = { userId: "u1", role: "r1" };
+  const ctx = new Context(new NextRequest(url()), {}, undefined, { local: seed });
+  ctx.set("extra", "e1");
+  ctx.destroy();
+
+  /* Reading `seed` — the exact object the caller passed in, not
+     `ctx.values.local` — is the point: a normalization that worked on a
+     COPY would leave `this.values.local` pointing at that copy, which
+     destroy() would empty correctly, while this original `seed` variable
+     sat forever with its two pristine bare keys untouched. Only looking at
+     the caller's own reference tells the two implementations apart. */
+  assert.deepEqual(Object.keys(seed), [], "the original seed object must end up with no own keys — a copy-based normalization would leave userId/role sitting on THIS object forever, since destroy() only ever clears this.values.local");
+});
+
+test("normalizing in place is observable on purpose: a caller holding its own seed object sees that exact object gain $userId and lose userId once the Context is built", () => {
+  const seed = { userId: "u1" };
+  new Context(new NextRequest(url()), {}, undefined, { local: seed });
+
+  assert.deepEqual(Object.keys(seed), ["$userId"], "the caller's own seed object must be the one renamed — not a copy the caller never sees");
+  assert.equal(seed.$userId, "u1");
+  assert.equal("userId" in seed, false);
+});
+
+test("0023 end-to-end: a value a Proxy's middleware sets still reaches the Route correctly — the constructor's normalization loop leaves an already-prefixed claim() result alone", async () => {
+  const proxy = Proxy({}).use((ctx) => ctx.set("normCheck", "n1"));
+  const id = forwarded(await proxy(new NextRequest(url("/api/x")), payload())).get(REQUEST_ID);
+
+  const { GET } = Route().get((ctx) => ctx.get("normCheck") ?? null);
+  const res = await GET(new NextRequest(url(), { headers: { [REQUEST_ID]: id } }), payload());
+  assert.equal((await res.json()).data, "n1", 'the loop added in this task must not disturb a claim() result that already carries the "$" prefix — see row 2 of the bare-key table above for the same guarantee at the unit level');
+});
+
+/* Out of scope, noted rather than handled (task 0023's own boundary): a
+   `local` bag that is `Object.freeze`d would make the normalization loop's
+   own `delete`/assignment throw under strict mode (ESM is always strict).
+   Nothing in this package freezes a seed today, and nothing above
+   constructs one that way — not tested here. */

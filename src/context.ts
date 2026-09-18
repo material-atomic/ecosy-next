@@ -20,7 +20,28 @@ const PROXY_KEY = Symbol.for("@ECOSY/CONTEXT_PROXY");
    that whole class of key into an ordinary own property. Added at EXACTLY
    this layer: a key that has passed through RequestStore already carries the
    prefix, so RequestStore.write's own `values[key] = value` stays safe with
-   no change of its own. */
+   no change of its own.
+   0023 adds a second place this prefix gets applied: the constructor
+   normalizes any bare key already sitting in a hand-built `local` bag before
+   `this.values` is ever assigned (see the loop there). That is the ONLY other
+   writer of the prefix — `get`/`set` still do it exactly as before, and
+   nothing below reads a name without it.
+   The warning that belongs here for whoever adds a fifth: every future API
+   that touches the bag has to cross this prefix, and the direction it crosses
+   in decides what it has to do.
+   - A name going OUT to a caller must have the prefix STRIPPED: `keys()`,
+     `entries()`, anything an app would reach for to see what a proxy handed
+     it. `destroy()` today is safe with none of that stripping only because it
+     deletes every own key without ever reading what any of them are named; a
+     `keys()` written the same "don't read the name" way would leak `$userId`
+     straight to a caller who only ever wrote or asked for `userId`.
+   - A name coming IN from a caller must have the prefix ADDED, exactly the
+     way `set` and `get` below already do it: a `has(name)` must ask about
+     `KEY_PREFIX + name`, never about `name`. Getting this one backwards is
+     quieter than the other — `has("userId")` would simply answer `false`
+     forever, for a key that is sitting right there.
+   None of those three is written in this task — see ContextValues and the
+   constructor's normalization loop below for why. */
 const KEY_PREFIX = "$";
 
 const _global = globalThis as (typeof globalThis & {
@@ -110,21 +131,40 @@ export type BaseUrlOptions = Omit<UrlOptions, "base">;
  * - `local`: held on the context itself — a Route's, starting from whatever the
  *   proxy handed over.
  *
- * Invariant this type does not enforce, and never checks at runtime: every key
- * already inside `local` must already carry {@link Context}'s `$` prefix. The
- * only two things this constructor argument is ever supposed to receive on the
- * `local` branch are `RequestStore.claim()`'s return value — already prefixed,
- * since it only ever holds what `Context.set` wrote — or the literal `{}`
- * default. Constructing a `Context` by hand with a `local` bag that already
- * has bare (unprefixed) keys in it is a fourth way into the bag that this
- * module's three-line fix does not see: a seeded `{ local: { userId: "u1" } }`
- * sits under the bare name `userId`, but `get("userId")` only ever looks under
- * `$userId` — so the seed is invisible from the first read, not stuck. It
- * silently answers `undefined` as if the key had never been set, and stays
- * that way until something calls `Context.set("userId", ...)`, which adds a
- * second, `$`-prefixed entry (`{ userId: "u1", $userId: "u2" }`) and only then
- * makes `get("userId")` answer at all. Nothing here stops that; it is a
- * contract on whoever builds a `local` value, not a check `Context` performs.
+ * The `local` branch used to carry an unchecked invariant: every key already
+ * inside it was *supposed* to already carry {@link Context}'s `$` prefix,
+ * because the only two things this constructor argument was ever meant to
+ * receive on that branch are `RequestStore.claim()`'s return value — already
+ * prefixed, since it only ever holds what `Context.set` wrote — or the
+ * literal `{}` default. Constructing a `Context` by hand with a `local` bag
+ * that already had bare (unprefixed) keys in it was a fourth way into the
+ * bag: a seeded `{ local: { userId: "u1" } }` sat under the bare name
+ * `userId`, but `get("userId")` only ever looks under `$userId` — so the seed
+ * was invisible from the first read, not stuck.
+ *
+ * 0023 turns that invariant into something the constructor actually makes
+ * true instead of only hoping for: any bare key it finds in `local` is given
+ * the `$` prefix in place, once, before `this.values` is assigned — see the
+ * normalization loop in the constructor. So today a hand-built
+ * `{ local: { userId: "u1" } }` reads back correctly (`get("userId") ===
+ * "u1"`). Two rules go with that, both decided in favour of the only valid
+ * source (`RequestStore.claim()`, whose keys are already prefixed): a key that
+ * already starts with `$` is left alone — `{ "$a": 1 }` means the key `a`, not
+ * a literal `$a` — and when both forms are present (`{ userId: "u1",
+ * $userId: "u2" }`) the prefixed one wins and the bare one is dropped.
+ *
+ * The renaming happens on the object you passed in, not on a copy — see that
+ * loop's comment for why. Two consequences for a caller that keeps its own
+ * reference to the seed:
+ *
+ * - That object's own keys change under it: `userId` becomes `$userId`.
+ * - A seed object is not reusable. `this.values` holds the object itself, so
+ *   two contexts built from the same seed share one bag for their whole life:
+ *   `a.set(...)` is readable through `b.get(...)`, and `a.destroy()` empties
+ *   the bag `b` is still using. That has always been true of this argument and
+ *   is not checked at runtime; before, a seeded value was invisible anyway, so
+ *   nobody had a reason to hold on to one. Now that it reads back, build a
+ *   fresh object per context.
  */
 export type ContextValues = { shared: string } | { local: Record<string, unknown> };
 
@@ -176,6 +216,53 @@ export class Context<Env extends LiteralObject = LiteralObject> {
 
     if (injects) {
       defineTokens(this, injects);
+    }
+
+    /* 0023: the fourth way into the bag (see ContextValues above) is a `local`
+       value handed to this constructor with bare keys already in it — a
+       Route or a Proxy never does that, but a caller building a `Context` by
+       hand for a test does, and nothing before this loop stopped it. Only
+       `local` is touched; `shared` values live in RequestStore under keys
+       `Context.set` already prefixed on the way in, so there is nothing to
+       normalize there, and reaching for `values.local` when only `shared` was
+       given would throw on `Object.entries(undefined)` — the guard below is
+       load-bearing, not decorative.
+
+       Four things this loop does on purpose, each one a place an earlier
+       draft got wrong:
+       - `Object.entries`, not `for...in` — only OWN enumerable keys. A bag
+         built with `Object.create(someProto)` must not pull an inherited key
+         off its prototype into the bag as if the caller had set it.
+       - A key that already starts with `$` is left alone. The only valid
+         source for a `local` value is `RequestStore.claim()`, which only ever
+         returns what `Context.set` wrote — already prefixed — so a key
+         arriving with `$` on it is trusted, not re-prefixed. One consequence
+         worth being explicit about: a seed of `{ "$a": 1 }` is read as "the
+         key `a`, already prefixed", not as "the literal key `$a`" — there is
+         no way to tell those two intentions apart from the string alone, and
+         the valid source only ever means the first.
+       - When both a bare key and its prefixed form are present in the same
+         bag (`{ userId: "u1", $userId: "u2" }`), the prefixed one wins and the
+         bare one is dropped. Same reasoning: the prefixed value is the one
+         that could have come from the valid source, so it is treated as the
+         newer, authoritative write.
+       - The rewrite happens on `values.local` itself, in place — not on a
+         copy. `destroy()` deletes every own key off the exact object
+         `this.values.local` points to; normalizing a copy would leave
+         `this.values.local` pointing at the original while `destroy()` (and
+         everything else) sees the copy, silently splitting the bag in two.
+         The price of "in place" is observable on purpose: a caller that kept
+         its own reference to the object it passed in sees that object's keys
+         renamed out from under it. That is not a bug to quietly avoid; it is
+         the cost of not throwing and not silently dropping the seed (see
+         ContextValues above), and it is covered by a test, not just this
+         comment. */
+    if ("local" in values) {
+      for (const [key, value] of Object.entries(values.local)) {
+        if (key.startsWith(KEY_PREFIX)) continue;
+        if (!Object.hasOwn(values.local, KEY_PREFIX + key)) values.local[KEY_PREFIX + key] = value;
+        delete values.local[key];
+      }
     }
 
     this.values = values;
@@ -269,14 +356,64 @@ export class Context<Env extends LiteralObject = LiteralObject> {
   }
 
   /**
-   * Continues past this middleware, carrying the incoming headers plus anything
-   * `init` adds. Only meaningful inside a {@link Proxy}.
+   * Continues past this middleware, forwarding the request headers as this
+   * context currently has them — the client's, plus every change
+   * {@link Context.setHeader} made and every header this middleware deleted
+   * from `ctx.init.request.headers` — plus anything `init` adds on top. Only
+   * meaningful inside a {@link Proxy}.
+   *
+   * Behaviour change since 1.1.0, and it is visible to any app that already
+   * calls this: `ctx.next()` used to forward the raw incoming request headers
+   * and silently drop everything `setHeader` had written, so
+   * `ctx.setHeader(name, value); return ctx.next();` was not the same as
+   * setting the header and returning nothing. Those two now forward the same
+   * headers. An app that was relying on the old behaviour — writing a header
+   * with `setHeader` for its own later use and expecting it NOT to reach the
+   * route — will see that header at the route from 2.0.0 on.
+   *
+   * Precedence, highest last: the headers on this context, then `init`'s, then
+   * the request id, which this context always sets or removes itself and which
+   * neither a middleware nor the client can supply.
    *
    * @param init - Response init, optionally with extra request headers.
    */
   next(init?: MiddlewareResponseInit) {
-    const combinedHeaders = new Headers(this.req.headers);
+    /* 0023: the base used to be `new Headers(this.req.headers)` — the raw
+       client request, ignoring `this.init.request.headers` entirely. That
+       meant `return ctx.next()` silently dropped every `setHeader` a
+       middleware had made, because `setHeader` only ever writes to
+       `this.init`, never to `this.req`. Building from `this.init` instead
+       fixes both directions at once: it already IS "the client's headers
+       plus every set/delete a middleware made", since the constructor seeds
+       it from `req.headers` and `setHeader` is the only thing that mutates it
+       afterward. Wrapping it in a fresh `new Headers(...)` here (rather than
+       handing the object itself to `Headers.set` calls below) matters for a
+       second, quieter reason: `next()` can be called more than once on the
+       same context — nothing stops a middleware from doing that — and
+       mutating `this.init.request.headers` directly would make the first
+       call's header changes bleed into the second call's baseline. A copy
+       keeps each call independent.
+       Gluing this onto `this.req.headers` instead (`new Headers(this.req
+       .headers)` plus a merge of `this.init`) was the shape that looked
+       almost right and was not: `set` on that union still lands, but a
+       middleware's `delete()` on `this.init.request.headers` never travels
+       — the client's original header is still sitting on `this.req.headers`
+       underneath, and a plain merge never removes anything, only adds. Since
+       `delete` is the only way a middleware can drop a header the client
+       sent, that shape loses exactly the half of `setHeader`'s contract that
+       matters for cookies (0024) and CSRF (0025) headers riding through
+       `ctx.init` from here on. */
+    const combinedHeaders = new Headers(this.init.request.headers);
 
+    /* Checking `?.headers` here rather than stopping at `init?.request` is
+       not observably different today — `new Headers(undefined)` (what a
+       shallower check plus an unconditional `new Headers(init.request
+       .headers)` would build when `request` is present but `headers` is
+       not) is itself an empty Headers, same as skipping the block entirely.
+       Measured as an accepted surviving mutant, kept for the same reason as
+       the `...init?.request` note on the return statement below: correct
+       today because `ModifiedRequest` has nothing else on it to react to,
+       not because the deeper check is redundant in general. */
     if (init?.request?.headers) {
       const additionalHeaders = new Headers(init.request.headers);
       additionalHeaders.forEach((value, key) => {
@@ -293,6 +430,19 @@ export class Context<Env extends LiteralObject = LiteralObject> {
       combinedHeaders.delete(REQUEST_ID);
     }
 
+    /* `...init?.request` here looks like it forwards whatever else a caller's
+       `request` object might carry beside `headers` — today it forwards
+       nothing observable. `ModifiedRequest` (types.ts) declares only
+       `headers`, and the very next line unconditionally overwrites that one
+       field, so every field this spread could ever contribute is already
+       gone by the time the object is built; measured directly against
+       `NextResponse.next`, an unlisted extra property on `request` (added at
+       runtime, past what the type allows) is dropped by Next itself before
+       it reaches anything this package's tests can see, own properties and
+       symbols both. Left in rather than removed: dropping it would be
+       correct today and silently wrong the moment `ModifiedRequest` grows a
+       second field, and there is nothing else here that would need to
+       change to keep working then. */
     return this.res.next({
       ...init,
       request: {
