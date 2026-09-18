@@ -6,11 +6,17 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const empty = new URL("./empty.cjs", import.meta.url).href;
+/* 0024: `cookie-jar.ts` imports `cookies` from `next/headers`, which throws
+   outside a real Next request — same problem `server-only` had, same fix. */
+const nextHeaders = new URL("./support/next-headers.cjs", import.meta.url).href;
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === "server-only") {
       return { url: empty, format: "commonjs", shortCircuit: true };
+    }
+    if (specifier === "next/headers") {
+      return { url: nextHeaders, format: "commonjs", shortCircuit: true };
     }
     return nextResolve(specifier, context);
   },
