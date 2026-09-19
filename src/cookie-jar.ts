@@ -52,7 +52,7 @@ function serialiseCookieHeader(values: Map<string, string | null>, original: str
  * A {@link CookieJar} over Next's `cookies()`.
  *
  * - **Route handler**: reads the request's cookies, writes `Set-Cookie`.
- * - **Proxy**: pass its context. Writes still reach the response, and are
+ * - **Gateway**: pass its context. Writes still reach the response, and are
  *   also written into the request headers the proxy forwards — measured on
  *   Next 16.3.4, a cookie set in a proxy through `cookies()` is otherwise not
  *   seen by the route serving the same request, so a session created in the

@@ -5,12 +5,16 @@
     "names": 70,
     "removedIn200": [
       "IInstrumentBuilder",
+      "IProxyCallable",
       "Instrument",
       "InstrumentBase",
       "InstrumentConfig",
       "InstrumentErrorHandler",
       "InstrumentHandler",
-      "InstrumentParam"
+      "InstrumentParam",
+      "Proxy",
+      "ProxyFactory",
+      "ProxyNextHandler"
     ],
     "addedIn200": [
       "ContextValues",
@@ -21,6 +25,10 @@
       "CsrfGuardOptions",
       "CsrfPort",
       "CsrfPortClass",
+      "Gateway",
+      "GatewayFactory",
+      "GatewayNextHandler",
+      "IGatewayCallable",
       "IdentityPort",
       "cookieJar",
       "csrfGuard",
@@ -32,16 +40,24 @@
     "names": 81,
     "removedIn200": [
       "IInstrumentBuilder",
+      "IProxyCallable",
       "Instrument",
       "InstrumentBase",
       "InstrumentConfig",
       "InstrumentErrorHandler",
       "InstrumentHandler",
       "InstrumentParam",
+      "Proxy",
+      "ProxyFactory",
+      "ProxyNextHandler",
       "SessionPort"
     ],
     "addedIn200": [
       "ContextValues",
+      "Gateway",
+      "GatewayFactory",
+      "GatewayNextHandler",
+      "IGatewayCallable",
       "IdentityPort"
     ]
   },

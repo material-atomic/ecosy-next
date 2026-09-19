@@ -3,7 +3,7 @@
    rename (six named spots, per the task) and a docblock. Everything below
    hunts a counter-example to one of the task's "KHÔNG BAO GIỜ" promises —
    most tests are unit-level against the two exported functions directly;
-   §6 goes through `dist` with a real Proxy and a real Route, because a
+   §6 goes through `dist` with a real Gateway and a real Route, because a
    contract mismatch between `csrf.ts` and `exception.ts` is exactly the
    kind of thing that has slipped past unit tests before in this repo.
 
@@ -19,7 +19,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
-const { csrfOrigin, csrfGuard, Proxy, Route } = require("../dist/index.js");
+const { csrfOrigin, csrfGuard, Gateway, Route } = require("../dist/index.js");
 const { NextRequest } = require("next/server");
 const { reset } = require("./support/next-headers.cjs");
 
@@ -386,19 +386,19 @@ test("csrfGuard: identity.load receives a jar with get/set/delete — the same s
 
 /* ---------------------------------------------------------------------- */
 /* 5. The Forbidden both middlewares throw becomes a real 403 through a    */
-/*    real Proxy and a real Route — not just assert.throws on the raw fn.  */
+/*    real Gateway and a real Route — not just assert.throws on the raw fn.  */
 /* ---------------------------------------------------------------------- */
 
-test("0025 §6, end-to-end through dist: csrfOrigin turns a failing origin check into a 403 through a real Proxy, and lets a passing one through to the next middleware", async () => {
+test("0025 §6, end-to-end through dist: csrfOrigin turns a failing origin check into a 403 through a real Gateway, and lets a passing one through to the next middleware", async () => {
   const failing = makeCsrfClass({ origin: () => false });
-  const proxyDenies = Proxy({}).use(csrfOrigin(failing));
+  const proxyDenies = Gateway({}).use(csrfOrigin(failing));
   const denied = await proxyDenies(new NextRequest(url("/page")), payload());
   assert.equal(denied.status, 403);
   assert.equal((await denied.json()).error.errorCode, "csrf_origin");
 
   let reachedNext = false;
   const passing = makeCsrfClass({ origin: () => true });
-  const proxyAllows = Proxy({}).use(csrfOrigin(passing), () => {
+  const proxyAllows = Gateway({}).use(csrfOrigin(passing), () => {
     reachedNext = true;
   });
   const allowed = await proxyAllows(new NextRequest(url("/page")), payload());
@@ -406,14 +406,14 @@ test("0025 §6, end-to-end through dist: csrfOrigin turns a failing origin check
   assert.ok(reachedNext, "a passing origin check must let the chain continue to the next middleware — this is the non-vacuous half of the test");
 });
 
-/* Building ANY Proxy — including the one in the test right above this one —
-   flips a one-way, process-wide flag (Context.activateProxy(), via
-   Memory.activateProxy() — see context.ts's own comment on it and
+/* Building ANY Gateway — including the one in the test right above this one —
+   flips a one-way, process-wide flag (Context.activateGateway(), via
+   Memory.activateGateway() — see context.ts's own comment on it and
    house-rules on process-level one-way state). Once flipped, a bare
    Route(), called with no `x-ecosyrequest-id` header, throws "Missing
    'x-ecosyrequest-id' header" before csrfGuard's middleware ever runs — a
    failure this test hunted into existence on its first draft. Routing
-   through a real (pass-through) Proxy first, exactly like
+   through a real (pass-through) Gateway first, exactly like
    `tests/cookie-jar.test.mjs`'s own §6, sidesteps the ordering dependency
    entirely: it is correct whether or not an earlier test in this file (or,
    for `node --test`'s one-process-per-file model, this file alone) already
@@ -426,7 +426,7 @@ function forwardedHeaders(response) {
   }
   return headers;
 }
-const passthroughProxy = Proxy({}).use((ctx) => ctx.next());
+const passthroughProxy = Gateway({}).use((ctx) => ctx.next());
 
 test("0025 §6, end-to-end through dist: csrfGuard turns a failing check() into a 403 through a real Route, and lets a passing one through to the handler", async () => {
   reset();

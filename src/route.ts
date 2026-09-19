@@ -6,12 +6,18 @@ import { NextRequest } from "next/server";
 import { Context, Memory } from "./context";
 import { Injected, InjectMap, RouteHandler, RouteNextHandler, RoutePayload } from "./types";
 import { Exception } from "./exception";
+import { Res } from "./res";
 
 /**
  * An error hook. Returning a value replaces the error that is then converted
  * into a response; returning `undefined` leaves it alone.
+ *
+ * `context` can be `undefined`: since 0064, building the context resolves
+ * every injected token eagerly, so a token whose constructor throws never
+ * finishes building one — the filter still runs (it is what reports the
+ * error), just without a context to inspect.
  */
-export type RouteFilter = (e: unknown, context: Context) => unknown;
+export type RouteFilter = (e: unknown, context: Context | undefined) => unknown;
 
 /** The chainable builder returned by {@link Route}. Every method returns a new builder. */
 export interface IRouteBuilder<Injects extends InjectMap = {}, Methods extends Record<string, RouteNextHandler> = {}> {
@@ -103,30 +109,30 @@ export interface IRouteBuilder<Injects extends InjectMap = {}, Methods extends R
  * What the proxy handed this request, taken out of the shared store so that no
  * other request — nor this one sent again — can read it.
  *
- * Without a Proxy there is nothing to take, and an `x-ecosyrequest-id` the
+ * Without a Gateway there is nothing to take, and an `x-ecosyrequest-id` the
  * client sent is ignored. With one, the header has to be an id this process's
- * Proxy issued; missing, forged or from elsewhere, the handler never runs.
+ * Gateway issued; missing, forged or from elsewhere, the handler never runs.
  */
 async function takeProxyValues(req: NextRequest): Promise<ContextValues> {
-  if (!Memory.isProxyActivated) return { local: {} };
+  if (!Memory.isGatewayActivated) return { local: {} };
 
   const header = req.headers.get(REQUEST_ID);
   if (!header) {
-    throw new Error("[Ecosy] Missing 'x-ecosyrequest-id' header in a proxied environment. Ensure this request passes through the Proxy middleware.");
+    throw new Error("[Ecosy] Missing 'x-ecosyrequest-id' header in a proxied environment. Ensure this request passes through the Gateway middleware.");
   }
 
   const check = await checkRequestId(header);
   if (check === "foreign") {
     throw new Error(
-      "[Ecosy] 'x-ecosyrequest-id' was not minted by this process: no Proxy here has issued an id yet. " +
-        "Proxy and Route must run in the same Node.js process — a proxy on the edge runtime, or in another " +
+      "[Ecosy] 'x-ecosyrequest-id' was not minted by this process: no Gateway here has issued an id yet. " +
+        "Gateway and Route must run in the same Node.js process — a proxy on the edge runtime, or in another " +
         "instance, cannot hand values to this route. A client making the header up looks the same.",
     );
   }
   if (check === "invalid") {
     throw new Error(
-      "[Ecosy] Invalid 'x-ecosyrequest-id': it is not an id this process's Proxy issued. " +
-        "The header was forged or altered, or a Proxy in another process signed it.",
+      "[Ecosy] Invalid 'x-ecosyrequest-id': it is not an id this process's Gateway issued. " +
+        "The header was forged or altered, or a Gateway in another process signed it.",
     );
   }
 
@@ -168,12 +174,31 @@ class RouteBuilder<Injects extends InjectMap = {}, Methods extends Record<string
 
     return async (req: NextRequest, payload: RoutePayload) => {
       let res: Response;
-      
+      let context: Context | undefined;
+
       const params = await payload.params;
-      const context = new Context(req, params, injectsMap, await takeProxyValues(req));
+      /* takeProxyValues can throw on its own — a route running in a proxied
+         app without a valid request id is a wiring problem, and both
+         proxy-activation.test.mjs and request-id.test.mjs pin that throw
+         escaping as a rejected promise, not a 500. That is unrelated to
+         0064 and stays exactly as it was: evaluated here, before the try
+         below, so its throw still exits uncaught. */
+      const proxyValues = await takeProxyValues(req);
 
       try {
         try {
+          /* Before 0064, `new Context(...)` sat above both `try`s (where
+             `proxyValues` still sits) because building a context only
+             defined getters — nothing about it could throw. defineTokens
+             now resolves every token eagerly inside this constructor, so a
+             token whose constructor throws (a database not up yet, say)
+             throws HERE. It has to be inside the try that already converts
+             a handler's throw into a response, or it would leave `.filter()`
+             and the 500 below unreached, exiting as an unhandled rejection
+             instead. `context` stays `undefined` in that case — see
+             RouteFilter's own note on why the hooks below accept that. */
+          context = new Context(req, params, injectsMap, proxyValues);
+
           if (!fn) {
             throw new Error("Route missing handler");
           }
@@ -226,8 +251,12 @@ class RouteBuilder<Injects extends InjectMap = {}, Methods extends Record<string
             }
           }
 
+          /* `context?.res` would also work here — `Context.res` is just the
+             static `Res` class, never per-instance state — but calling
+             `Res` directly says plainly that these branches do not depend
+             on `context` existing, which matters now that it might not. */
           if (e instanceof Exception) {
-            res = context.res.json({
+            res = Res.json({
               success: false,
               data: null,
               status: e.status,
@@ -240,10 +269,10 @@ class RouteBuilder<Injects extends InjectMap = {}, Methods extends Record<string
           } else if (
             typeof e === "object" && e !== null && "success" in e && "data" in e && "status" in e && "error" in e
           ) {
-            res = context.res.json(e);
+            res = Res.json(e);
           } else {
             console.error("[CRITICAL SYSTEM ERROR]", e);
-            res = context.res.json({
+            res = Res.json({
               success: false,
               data: null,
               status: 500,
@@ -254,7 +283,10 @@ class RouteBuilder<Injects extends InjectMap = {}, Methods extends Record<string
           }
         }
       } finally {
-        context.destroy();
+        /* context is undefined only when the token construction above threw
+           before the assignment ran — nothing was ever built for it to
+           clean up. */
+        context?.destroy();
       }
 
       return res;

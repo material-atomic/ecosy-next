@@ -1,5 +1,5 @@
 /* 0023 phần B. `tests/request-id.test.mjs` already has the shape this file
-   needs — a real Proxy issuing a signed id, a real Route claiming it through
+   needs — a real Gateway issuing a signed id, a real Route claiming it through
    `dist` — but it is on the "cấm sửa" list for this task (it has to stay
    green with not one line touched, since it is the net for 0014/0021/0039).
    This file exists because `route.ts`'s `takeProxyValues` (line ~133) is
@@ -28,7 +28,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { Route, Proxy } = require("../dist/index.js");
+const { Route, Gateway } = require("../dist/index.js");
 const { NextRequest } = require("next/server");
 
 const ID = "x-ecosyrequest-id";
@@ -64,7 +64,7 @@ const store = () => globalThis[Symbol.for("@ecosy/next:request-store")];
 /* ---------------------------------------------------------------------- */
 
 test("after a GET reads back what the proxy set, the entry is gone from the store's Map — not just left present with its values emptied", async () => {
-  const proxy = Proxy({}).use((ctx) => ctx.set("userId", "u-handoff-1"));
+  const proxy = Gateway({}).use((ctx) => ctx.set("userId", "u-handoff-1"));
   const id = forwarded(await proxy(new NextRequest(url("/api/x")), payload())).get(ID);
 
   const { GET } = Route().get((ctx) => ctx.get("userId") ?? null);
@@ -89,7 +89,7 @@ test("after a GET reads back what the proxy set, the entry is gone from the stor
 /* ---------------------------------------------------------------------- */
 
 test("a second request with the same id, dispatched only after the first has already claimed it, gets nothing of its own — the two never share one bag", async () => {
-  const proxy = Proxy({}).use((ctx) => ctx.set("userId", "u-concurrent"));
+  const proxy = Gateway({}).use((ctx) => ctx.set("userId", "u-concurrent"));
   const id = forwarded(await proxy(new NextRequest(url("/api/x")), payload())).get(ID);
 
   let release;
@@ -145,7 +145,7 @@ test("a validly signed id that nothing was ever written under reaches the handle
      write for this id at all. Distinct from an id that IS foreign or
      malformed (already covered by tests/request-id.test.mjs's "a route
      refuses an altered id, and a request with none", out of scope for this
-     file): this id is real, signed by this same process's Proxy, and simply
+     file): this id is real, signed by this same process's Gateway, and simply
      has nothing sitting in the store for it — the ordinary case of a proxied
      page route, or an /api/ route no middleware bothered to `set` anything
      on. Written explicitly so a report distinguishes THIS test's failure
@@ -154,7 +154,7 @@ test("a validly signed id that nothing was ever written under reaches the handle
      from the previous two tests' failure (a wrong `.data` or a live
      `store().has(id)`), rather than all three reading as "the same thing
      broke". */
-  const proxy = Proxy({});
+  const proxy = Gateway({});
   const id = forwarded(await proxy(new NextRequest(url("/page")), payload())).get(ID);
 
   const { GET } = Route().get((ctx) => ctx.get("anything") ?? "empty-ok");

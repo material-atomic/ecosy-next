@@ -58,7 +58,7 @@ const memory = _global[MEMORY_KEY];
  * A process-wide key/value store, held on `globalThis` under a `Symbol.for` key
  * so a hot reload re-uses the same Map instead of starting a second one.
  *
- * What a {@link Proxy} hands to a {@link Route} does not live here: it goes
+ * What a {@link Gateway} hands to a {@link Route} does not live here: it goes
  * through a store of its own, bounded and keyed by a signed request id.
  */
 export class Memory {
@@ -103,7 +103,7 @@ export class Memory {
    * The flag is defined non-writable and non-configurable, so it is one-way for
    * the life of the process.
    */
-  static activateProxy() {
+  static activateGateway() {
     if (!(globalThis as any)[PROXY_KEY]) {
       Object.defineProperty(globalThis, PROXY_KEY, {
         value: true,
@@ -113,8 +113,8 @@ export class Memory {
     }
   }
 
-  /** Whether {@link Memory.activateProxy} has been called. */
-  static get isProxyActivated() {
+  /** Whether {@link Memory.activateGateway} has been called. */
+  static get isGatewayActivated() {
     return !!(globalThis as any)[PROXY_KEY];
   }
 }
@@ -123,11 +123,11 @@ export class Memory {
 export type BaseUrlOptions = Omit<UrlOptions, "base">;
 
 /**
- * Where a context keeps what {@link Context.set} stores. {@link Proxy} and
+ * Where a context keeps what {@link Context.set} stores. {@link Gateway} and
  * {@link Route} choose it; a context built by hand keeps its own.
  *
  * - `shared`: written under a signed request id, for the route serving the same
- *   request to take — a Proxy's context.
+ *   request to take — a Gateway's context.
  * - `local`: held on the context itself — a Route's, starting from whatever the
  *   proxy handed over.
  *
@@ -174,11 +174,11 @@ export type ContextValues = { shared: string } | { local: Record<string, unknown
  * access, and a per-request bag of values.
  *
  * A context is built per request; its injected dependencies are not. Each is
- * an own getter onto its token's shared instance, built the first time it is
- * read and typed through {@link Injected}. Shared per class, and a class is one
- * per module graph that evaluates it — Next compiles instrumentation, the proxy,
- * route handlers and pages separately — so it is one per process only for a
- * class anchored with `@ecosy/anchor`.
+ * an own property holding its token's shared instance, resolved eagerly while
+ * this constructor runs and typed through {@link Injected}. Shared per class,
+ * and a class is one per module graph that evaluates it — Next compiles
+ * instrumentation, the gateway, route handlers and pages separately — so it
+ * is one per process only for a class anchored with `@ecosy/anchor`.
  *
  * @template Env - The shape of `process.env` this app expects.
  */
@@ -196,7 +196,8 @@ export class Context<Env extends LiteralObject = LiteralObject> {
   /**
    * @param req - The incoming request.
    * @param params - Route params, already resolved.
-   * @param injects - Tokens to define on the context. None is constructed here.
+   * @param injects - Tokens to put on the context. Every one is resolved and
+   * assigned before the constructor returns.
    * @param values - Where `set` keeps values. See {@link ContextValues}.
    */
   constructor(
@@ -220,7 +221,7 @@ export class Context<Env extends LiteralObject = LiteralObject> {
 
     /* 0023: the fourth way into the bag (see ContextValues above) is a `local`
        value handed to this constructor with bare keys already in it — a
-       Route or a Proxy never does that, but a caller building a `Context` by
+       Route or a Gateway never does that, but a caller building a `Context` by
        hand for a test does, and nothing before this loop stopped it. Only
        `local` is touched; `shared` values live in RequestStore under keys
        `Context.set` already prefixed on the way in, so there is nothing to
@@ -314,7 +315,7 @@ export class Context<Env extends LiteralObject = LiteralObject> {
    * Stores a value for the rest of this request, for a middleware to hand
    * something to the handler.
    *
-   * In a {@link Proxy} the value waits for the {@link Route} that serves the
+   * In a {@link Gateway} the value waits for the {@link Route} that serves the
    * request, which takes it once; unclaimed, it expires after a minute.
    *
    * The key is not stored under the name you give it: it is stored under that
@@ -360,7 +361,7 @@ export class Context<Env extends LiteralObject = LiteralObject> {
    * context currently has them — the client's, plus every change
    * {@link Context.setHeader} made and every header this middleware deleted
    * from `ctx.init.request.headers` — plus anything `init` adds on top. Only
-   * meaningful inside a {@link Proxy}.
+   * meaningful inside a {@link Gateway}.
    *
    * Behaviour change since 1.1.0, and it is visible to any app that already
    * calls this: `ctx.next()` used to forward the raw incoming request headers
@@ -509,8 +510,8 @@ export class Context<Env extends LiteralObject = LiteralObject> {
     }
   }
 
-  /** Shorthand for {@link Memory.activateProxy}. */
-  static activateProxy() {
-    Memory.activateProxy();
+  /** Shorthand for {@link Memory.activateGateway}. */
+  static activateGateway() {
+    Memory.activateGateway();
   }
 }

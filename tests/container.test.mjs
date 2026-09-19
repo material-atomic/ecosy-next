@@ -5,15 +5,15 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { Route, Proxy, Handler, Bootstrap } = require("../dist/index.js");
+const { Route, Gateway, Handler, Bootstrap } = require("../dist/index.js");
 const { Inject } = require("../dist/inject.js");
 const { NextRequest } = require("next/server");
 
-/* Every request goes through a Proxy first, as it does in an app: the proxy
+/* Every request goes through a Gateway first, as it does in an app: the proxy
    issues a signed id, and a Route in a proxied process refuses a request
    without one. The id arrives the way Next forwards it, as the
    `x-middleware-request-*` headers of the proxy's response. */
-const gateway = Proxy({});
+const gateway = Gateway({});
 const FORWARDED = "x-middleware-request-";
 
 async function request(path = "/api/x", headers = {}) {
@@ -51,7 +51,14 @@ async function quiet(fn) {
   }
 }
 
-test("only a token that is read gets built, once for every request", async () => {
+/* Renamed for 0064: eager `defineTokens` builds every declared token with
+   the context, not the first time a handler happens to read one — so "only
+   a token that is read gets built" is no longer true, and B.count is 1 here,
+   not 0. What IS still true, and still worth a name of its own, is that a
+   class is built once per process no matter how many requests declare it —
+   that is `resolve()`'s cache, untouched by this task, and A.count staying
+   at 1 across three requests is what pins it. */
+test("a token declared and never read is built anyway — the count is one per class per process, not one per read", async () => {
   const A = counted("A");
   const B = counted("B");
   const contexts = [];
@@ -66,13 +73,13 @@ test("only a token that is read gets built, once for every request", async () =>
     assert.equal((await res.json()).data, "A#1");
   }
 
-  assert.equal(A.count, 1);
-  assert.equal(B.count, 0, "b was never read");
+  assert.equal(A.count, 1, "read every time, still one instance for the process");
+  assert.equal(B.count, 1, "never read by the handler, but declared — built once anyway, not zero times");
   assert.equal(new Set(contexts).size, 3, "one new context per request");
   assert.ok(contexts.every((ctx) => ctx.a === contexts[0].a));
 });
 
-test("one class is one instance across Route, Proxy, Handler, Bootstrap and Inject", async () => {
+test("one class is one instance across Route, Gateway, Handler, Bootstrap and Inject", async () => {
   const Shared = counted("Shared");
   const seen = [];
 
@@ -82,7 +89,7 @@ test("one class is one instance across Route, Proxy, Handler, Bootstrap and Inje
   });
   await GET(await request(), payload());
 
-  await Proxy({ s: Shared }).use((ctx) => {
+  await Gateway({ s: Shared }).use((ctx) => {
     seen.push(ctx.s);
   })(await request("/page"), payload());
 
@@ -116,7 +123,13 @@ test("one class is one instance across Route, Proxy, Handler, Bootstrap and Inje
   assert.equal(Shared.count, 1);
 });
 
-test("a token nested through extends Inject is built once, and only when read", async () => {
+/* Renamed for 0064: `Inject()`'s base class constructor calls the same
+   defineTokens as Route and Gateway (see container.ts §6.1's five call
+   sites), so `logger` is resolved the moment `new Deps()` runs — not
+   deferred to "only when read". Nợ N7 of 0059 (Inject() not sharing v3's
+   speedup) closes as a side effect of there being only one function left to
+   patch. */
+test("a token nested through extends Inject is built once, with the class — the same instance the route sees", async () => {
   const Logger = counted("Logger");
   let depsBuilt = 0;
 
@@ -128,6 +141,8 @@ test("a token nested through extends Inject is built once, and only when read", 
   }
 
   const mine = new Deps();
+  assert.equal(Logger.count, 1, "built the instant the base class's constructor ran, before Deps's own body");
+
   const alsoMine = new Deps();
 
   let fromRoute;
@@ -139,11 +154,109 @@ test("a token nested through extends Inject is built once, and only when read", 
   await GET(await request(), payload());
 
   assert.equal(depsBuilt, 3, "two by hand, one by the container across both requests");
-  assert.equal(Logger.count, 0, "nobody has read logger yet");
 
   assert.equal(mine.logger, alsoMine.logger);
   assert.equal(mine.logger, fromRoute.logger);
-  assert.equal(Logger.count, 1);
+  assert.equal(Logger.count, 1, "still one instance for the process, no matter how many things declare the token");
+});
+
+test("every declared token is an own enumerable property of the context — `Object.keys`, object spread and `JSON.stringify` all see the same instance `ctx.db` hands back", async () => {
+  const Db = counted("Db");
+  let ctx;
+
+  const { GET } = Route({ db: Db }).get((context) => {
+    ctx = context;
+    return null;
+  });
+  await GET(await request(), payload());
+
+  const resolved = ctx.db;
+  assert.ok(resolved instanceof Db);
+
+  /* Each assertion below is a place a "does it still work" check that stops
+     at `!== undefined` would pass even if a bad patch swapped in a lookalike
+     object instead of the real singleton — see 0059 §2.3. Every one here
+     checks IDENTITY or an own field of the real instance, not just presence. */
+  assert.ok(Object.keys(ctx).includes("db"), "Object.keys lists it");
+  assert.equal({ ...ctx }.db, resolved, "object spread carries the exact same instance");
+
+  const roundTripped = JSON.parse(JSON.stringify(ctx));
+  assert.equal(roundTripped.db.id, resolved.id, "JSON.stringify serializes the same instance's own fields, not an empty object");
+
+  let seenInForIn = false;
+  for (const key in ctx) if (key === "db") seenInForIn = true;
+  assert.ok(seenInForIn, "for..in walks it too — it was never only an enumerable-flag story");
+});
+
+test("a route declaring five tokens lists all five, not just the first and not all-but-the-last", async () => {
+  const tokens = {};
+  for (let i = 0; i < 5; i++) {
+    tokens[`t${i}`] = counted(`Five${i}`);
+  }
+
+  let ctx;
+  const { GET } = Route(tokens).get((context) => {
+    ctx = context;
+    return null;
+  });
+  await GET(await request(), payload());
+
+  const keys = Object.keys(ctx);
+  /* Checked one at a time, by both presence and class identity — a table of
+     N=1 (or a bare `.length === 5`) cannot tell "all five" apart from "five
+     things, wrong ones swapped in", and cannot tell "dropped the first" apart
+     from "dropped the last". `t4` here is deliberately the boundary case: a
+     `.slice(0, -1)` mutant passes every check up to i=3 and only dies at i=4. */
+  for (let i = 0; i < 5; i++) {
+    const key = `t${i}`;
+    assert.ok(keys.includes(key), `${key} is listed`);
+    assert.ok(ctx[key] instanceof tokens[key], `${key} holds its own class's instance, not another token's`);
+  }
+});
+
+test("a token named after one of Context's own properties still wins — `params` as a token name reads the token, not the route params", async () => {
+  const ParamsToken = counted("ParamsToken");
+  let ctx;
+
+  const { GET } = Route({ params: ParamsToken }).get((context) => {
+    ctx = context;
+    return null;
+  });
+  await GET(await request(), { params: Promise.resolve({ id: "42" }) });
+
+  /* Context's constructor assigns `this.params = params` (the route's own
+     params) before calling defineTokens — a token declared under the same
+     name has to run AFTER that to win. P7 moves defineTokens ahead of it,
+     which would make this read back the route's `{ id: "42" }` instead. */
+  assert.ok(ctx.params instanceof ParamsToken, "the token wins over Context's own `params` field");
+  assert.equal(ctx.params.id, "ParamsToken#1");
+});
+
+test("a handler may overwrite `ctx.db`, and the overwrite is local to that request — the next context reads the token again", async () => {
+  const Db = counted("Db");
+  const sentinel = { fake: true };
+
+  /* Before 0064, this threw under ESM/strict — 2.0.0's own accessor has no
+     setter, and v3's getter-on-prototype is the same shape. Assigning
+     straight onto an own data property accepts the write instead (0064
+     §3.7); that is a real behaviour change from both released versions, so
+     it gets its own name and its own CHANGELOG line, not a silent pass. */
+  const { GET } = Route({ db: Db }).get((ctx) => {
+    ctx.db = sentinel;
+    return ctx.db === sentinel;
+  });
+  const first = await GET(await request(), payload());
+  assert.equal((await first.json()).data, true, "the overwrite is accepted, not thrown");
+
+  let capturedCtx;
+  const { GET: GET2 } = Route({ db: Db }).get((ctx) => {
+    capturedCtx = ctx;
+    return null;
+  });
+  await GET2(await request(), payload());
+
+  assert.ok(capturedCtx.db instanceof Db, "a fresh context reads the token again");
+  assert.notEqual(capturedCtx.db, sentinel, "the overwrite from the request before did not leak into this one");
 });
 
 test("a constructor that throws caches nothing, and its error goes through the route's filter", async () => {
@@ -174,6 +287,34 @@ test("a constructor that throws caches nothing, and its error goes through the r
 
   await GET(await request(), payload());
   assert.equal(attempts, 2);
+});
+
+/* Route's own version of this test lives just above. §6.3 of task 0064 moves
+   `new Context(...)` inside the try in BOTH route.ts and proxy.ts — two
+   files, same shape, same reason — and the task calls out explicitly that a
+   Route-only test would leave that asymmetric: fixing one file and testing
+   only it is exactly the kind of gap the house rule "vá một trục thì quét
+   các trục cùng hình" warns about. This is the Gateway side of the same
+   claim. */
+test("a token whose constructor throws during a Gateway's context also reaches the gateway's own catch, not an unhandled rejection", async () => {
+  let attempts = 0;
+  class Flaky {
+    constructor() {
+      attempts++;
+      if (attempts === 1) throw new Error("database not up yet");
+    }
+  }
+
+  const gw = Gateway({ flaky: Flaky });
+
+  const first = await quiet(async () => gw(await request(), payload()));
+  assert.equal(first.status, 500);
+  assert.equal((await first.json()).error, "Internal Server Error");
+
+  const second = await gw(await request(), payload());
+  assert.equal(second.headers.get("x-middleware-next"), "1", "the second request, with a cached Flaky, continues normally");
+
+  assert.equal(attempts, 2, "the failed first attempt cached nothing — same rule as the Route side");
 });
 
 test("a cycle is reported by name, not as a stack overflow", async () => {
@@ -241,10 +382,10 @@ test("the CommonJS and ESM builds in one process share one instance", async () =
   assert.equal(Dual.count, 1);
 });
 
-test("Proxy: a middleware returning a Response stops the chain, otherwise it continues", async () => {
-  const blocked = await Proxy({}).use(() => new Response("no", { status: 401 }))(await request("/page"), payload());
+test("Gateway: a middleware returning a Response stops the chain, otherwise it continues", async () => {
+  const blocked = await Gateway({}).use(() => new Response("no", { status: 401 }))(await request("/page"), payload());
   assert.equal(blocked.status, 401);
 
-  const passed = await Proxy({}).use(() => {})(await request("/page"), payload());
+  const passed = await Gateway({}).use(() => {})(await request("/page"), payload());
   assert.equal(passed.headers.get("x-middleware-next"), "1");
 });

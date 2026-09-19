@@ -8,7 +8,7 @@
    a CSRF module has to satisfy, `IdentityPort` declares the shape something
    providing identity has to satisfy, and `csrfOrigin`/`csrfGuard` are the
    two connectors that wire either into the two places Next asks for a
-   middleware — a Proxy, a Route. Catching `Forbidden` into a 403, calling at
+   middleware — a Gateway, a Route. Catching `Forbidden` into a 403, calling at
    the right point, building a jar from the context: that is Next-shaped
    knowledge, not CSRF-shaped knowledge, and it is all this file knows. Given
    no `Csrf` class and no `identity`/`bind`, `csrfGuard` cannot do anything —
@@ -82,10 +82,10 @@ export interface CsrfGuardOptions<Ctx> {
  * the proxy, in front of everything:
  *
  * ```ts
- * export const proxy = Proxy({}).use(csrfOrigin(AppCsrf));
+ * export const proxy = Gateway({}).use(csrfOrigin(AppCsrf));
  * ```
  *
- * Throws {@link Forbidden}, which a Proxy and a Route both turn into a 403.
+ * Throws {@link Forbidden}, which a Gateway and a Route both turn into a 403.
  */
 export function csrfOrigin<Ctx extends { req: Request }>(Csrf: CsrfPortClass, message = "Cross-site request refused") {
   return (context: Ctx): void => {
@@ -106,7 +106,7 @@ export function csrfOrigin<Ctx extends { req: Request }>(Csrf: CsrfPortClass, me
  * is the Next-shaped half: work out what the token is bound to (from
  * `bind`, or from the id `identity` loads out of a {@link cookieJar}), call
  * `check()` once per request, and turn a refusal into {@link Forbidden},
- * which a Proxy and a Route both render as a 403. Give it a `Csrf` whose
+ * which a Gateway and a Route both render as a 403. Give it a `Csrf` whose
  * `check()` answers `true` to everything and this middleware is a no-op on
  * every request — nothing here can notice that, and no test in this package
  * will tell you. A guarded route is only as guarded as the module you

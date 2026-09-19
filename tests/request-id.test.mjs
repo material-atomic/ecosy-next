@@ -1,4 +1,4 @@
-/* The request id a Proxy issues and a Route requires: signed, never taken from
+/* The request id a Gateway issues and a Route requires: signed, never taken from
    the client, good for one handoff. In its own file — marking a process as
    proxied is one-way, and the first test needs a process that has not issued
    an id yet. The tests run in order. */
@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
-const { Route, Proxy } = require("../dist/index.js");
+const { Route, Gateway } = require("../dist/index.js");
 const { NextRequest } = require("next/server");
 
 const ID = "x-ecosyrequest-id";
@@ -28,16 +28,16 @@ function forwarded(response) {
 }
 
 let middlewareRuns = 0;
-const proxy = Proxy({}).use((ctx) => {
+const proxy = Gateway({}).use((ctx) => {
   middlewareRuns++;
   if (ctx.url.pathname.startsWith("/api/")) ctx.set("userId", ctx.req.headers.get("x-user"));
 });
 
 test("an id another process issued is refused as foreign, by name", async () => {
   const dist = fileURLToPath(new URL("../dist/index.js", import.meta.url));
-  const script = `const { Proxy } = require(${JSON.stringify(dist)});
+  const script = `const { Gateway } = require(${JSON.stringify(dist)});
     const { NextRequest } = require("next/server");
-    Proxy({})(new NextRequest("http://localhost/api/x"), { params: Promise.resolve({}) })
+    Gateway({})(new NextRequest("http://localhost/api/x"), { params: Promise.resolve({}) })
       .then((res) => process.stdout.write(res.headers.get("${FORWARDED}${ID}") ?? ""));`;
   const other = execFileSync(process.execPath, ["--import", fileURLToPath(new URL("./hooks.mjs", import.meta.url)), "-e", script], {
     cwd: fileURLToPath(new URL("..", import.meta.url)),
@@ -93,7 +93,7 @@ test("a route refuses an altered id, and a request with none", async () => {
 
 test("ctx.next() forwards the proxy's id, not one the client sent", async () => {
   const replayed = forwarded(await proxy(new NextRequest(url("/page")), payload())).get(ID);
-  const passthrough = Proxy({}).use((ctx) => ctx.next());
+  const passthrough = Gateway({}).use((ctx) => ctx.next());
 
   const sent = forwarded(await passthrough(new NextRequest(url("/page"), { headers: { [ID]: replayed } }), payload())).get(ID);
   assert.match(sent, SIGNED);
@@ -102,7 +102,7 @@ test("ctx.next() forwards the proxy's id, not one the client sent", async () => 
 
 test("the handoff store is bounded: 10 000 entries, a minute each", async () => {
   const store = globalThis[Symbol.for("@ecosy/next:request-store")];
-  const setter = Proxy({}).use((ctx) => {
+  const setter = Gateway({}).use((ctx) => {
     ctx.set("n", 1);
   });
   const realNow = Date.now;

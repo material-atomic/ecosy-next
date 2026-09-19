@@ -1,6 +1,6 @@
 # @ecosy/next
 
-Adapters for building a Next.js app on `Route` and `Proxy`: a request context
+Adapters for building a Next.js app on `Route` and `Gateway`: a request context
 shared across both, a cookie jar that works in a proxy, and the Next-shaped
 half of CSRF and identity checks. The package depends on nothing but Next —
 session and CSRF implementations stay in the app.
@@ -8,7 +8,7 @@ session and CSRF implementations stay in the app.
 Documentation: **[docs.ecosy.io/next](https://docs.ecosy.io/next)**
 
 <!-- readme:api -->
-`Route`, `Proxy`, `Context`, `ContextValues`, `cookieJar`, `CookieJar`,
+`Route`, `Gateway`, `Context`, `ContextValues`, `cookieJar`, `CookieJar`,
 `CookieJarOptions`, `CookieForwarding`, `csrfOrigin`, `csrfGuard`, `CsrfPort`,
 `CsrfPortClass`, `IdentityPort`, `CsrfGuardOptions`, `CsrfContext`
 <!-- /readme:api -->
@@ -37,11 +37,11 @@ pulls `jsonwebtoken` into its bundle.
 ## Route
 
 `Route` builds a Next route handler. `ctx.get`/`ctx.set` hand a value from one
-middleware to the next, or across a `Proxy` → `Route` boundary, for the rest of
+middleware to the next, or across a `Gateway` → `Route` boundary, for the rest of
 one request. Building a `Context` by hand instead of through `Route` takes its
 seed values typed as `ContextValues`.
 
-Values a `Proxy` sets travel to the `Route` serving the same request through a
+Values a `Gateway` sets travel to the `Route` serving the same request through a
 bounded store (10,000 entries, 60 seconds), keyed by a signed request id the
 proxy issues on every request — a client-supplied id is never trusted, and an
 invalid one is rejected with a 400 before any middleware runs.
@@ -57,7 +57,7 @@ export const GET = Route().get((ctx) => {
 ## cookieJar
 
 `cookieJar()` reads and writes cookies over Next's `cookies()`. In a route
-handler or Server Component, call it with no argument. In a `Proxy`, pass its
+handler or Server Component, call it with no argument. In a `Gateway`, pass its
 context — otherwise a cookie set there compiles fine but is never seen by the
 `Route` serving the same request, because the write never reaches the request
 headers the proxy forwards.
@@ -87,7 +87,7 @@ in this package can tell, and no test here will say so. The guard is only as
 strong as the module passed in.
 
 ```ts
-import { Route, Proxy, csrfOrigin, csrfGuard, type IdentityPort, type CsrfPort } from "@ecosy/next";
+import { Route, Gateway, csrfOrigin, csrfGuard, type IdentityPort, type CsrfPort } from "@ecosy/next";
 
 class AppCsrf implements CsrfPort {
   origin() { return true; }
@@ -97,7 +97,7 @@ class AppSession implements IdentityPort {
   async load() { return { id: "u1" }; }
 }
 
-export const proxy = Proxy({}).use(csrfOrigin(AppCsrf));
+export const proxy = Gateway({}).use(csrfOrigin(AppCsrf));
 export const POST = Route()
   .use(csrfGuard(AppCsrf, { identity: AppSession }))
   .post(async () => Response.json({ ok: true }));

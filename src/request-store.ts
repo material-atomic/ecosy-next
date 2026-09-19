@@ -1,4 +1,4 @@
-/** The header a {@link Proxy} forwards its request id in. */
+/** The header a {@link Gateway} forwards its request id in. */
 export const REQUEST_ID = "x-ecosyrequest-id";
 
 const STORE_KEY = Symbol.for("@ecosy/next:request-store");
@@ -42,7 +42,7 @@ function prune(map: Map<string, Entry>, now: number) {
 }
 
 /**
- * What a {@link Proxy} hands to the {@link Route} that serves the same request,
+ * What a {@link Gateway} hands to the {@link Route} that serves the same request,
  * keyed by the request's signed id.
  *
  * Bounded both ways: every request through a proxy whose middleware sets a

@@ -8,10 +8,10 @@ import { checkRequestId, mintRequestId } from "./request-id";
 import { REQUEST_ID } from "./request-store";
 
 /** A middleware in the shape Next expects to be exported from `proxy.ts`. */
-export type ProxyNextHandler = (req: NextRequest, payload: RoutePayload) => Promise<Response>;
+export type GatewayNextHandler = (req: NextRequest, payload: RoutePayload) => Promise<Response>;
 
 /** Callable directly as a Next middleware, and chainable. */
-export interface IProxyCallable<Injects extends InjectMap = {}> {
+export interface IGatewayCallable<Injects extends InjectMap = {}> {
   (req: NextRequest, payload: RoutePayload): Promise<Response>;
   /**
    * Adds middlewares, run in order.
@@ -19,14 +19,14 @@ export interface IProxyCallable<Injects extends InjectMap = {}> {
    * @param newMiddlewares - Each receives the injected context.
    * @returns A new callable; the receiver is left unchanged.
    */
-  use(...newMiddlewares: MiddlewareFn<Injected<Context, Injects>>[]): IProxyCallable<Injects>;
+  use(...newMiddlewares: MiddlewareFn<Injected<Context, Injects>>[]): IGatewayCallable<Injects>;
   /**
    * Closes the chain with a final middleware.
    *
    * @param fn - Runs after the ones added with `use`. Omit it to keep just those.
    * @returns A Next middleware.
    */
-  proxy(fn?: MiddlewareFn<Injected<Context, Injects>>): ProxyNextHandler;
+  proxy(fn?: MiddlewareFn<Injected<Context, Injects>>): GatewayNextHandler;
 }
 
 /**
@@ -40,22 +40,45 @@ export interface IProxyCallable<Injects extends InjectMap = {}> {
 function createProxyCallable<Injects extends InjectMap>(
   injects: Injects,
   middlewares: MiddlewareFn<Injected<Context, Injects>>[] = []
-): IProxyCallable<Injects> {
-  /* Building a Proxy — not importing this module — marks the app as proxied.
+): IGatewayCallable<Injects> {
+  /* Building a Gateway — not importing this module — marks the app as proxied.
      The root entry re-exports this module, so activating on import proxied
-     every app that imported anything from the package, Proxy or not. From here
+     every app that imported anything from the package, Gateway or not. From here
      on a Route whose request lacks `x-ecosyrequest-id` throws, which turns "this
      route was reachable without middleware" into an error at the boundary — and
      means the proxy's `matcher` must cover every route expected to work. */
-  Context.activateProxy();
+  Context.activateGateway();
 
-  const runWithCatch = async (context: Context, fn?: MiddlewareFn<Injected<Context, Injects>>) => {
+  /* `buildContext` used to be the caller's job — `serve` built the Context
+     itself, outside of this function entirely, and only handed the finished
+     object in here. That was fine while building a Context only installed
+     getters: nothing about it could throw. Since 0064, defineTokens resolves
+     every token eagerly inside the Context constructor, so a token whose
+     constructor throws (a database not up yet, say) now throws from `new
+     Context(...)` itself — and that has to land in the SAME catch that
+     already turns a middleware's throw into a response, or it exits `serve`
+     as an unhandled rejection instead of a 500.
+     Taking a factory instead of an already-built context is what makes that
+     possible: there is no way to have "context built before this call, but
+     its construction still guarded by this call's try" any other way. The
+     cost is that `context` inside the catch block below may be `undefined`
+     — the one case where `buildContext()` itself is what threw — so the
+     error branches use `Res.json` (the same static helper `context.res.json`
+     always was; `Context.res` is just `Res`) instead of reaching through an
+     instance that might not exist. */
+  const runWithCatch = async (
+    buildContext: () => Context,
+    fn?: MiddlewareFn<Injected<Context, Injects>>
+  ): Promise<{ context: Context | undefined; response: Response | null }> => {
+    let context: Context | undefined;
     try {
+      context = buildContext();
+
       if (middlewares.length) {
         for (const middleware of middlewares) {
           const result = await middleware(context as Injected<Context, Injects>);
           if (result instanceof Response) {
-            return result;
+            return { context, response: result };
           }
         }
       }
@@ -63,36 +86,42 @@ function createProxyCallable<Injects extends InjectMap>(
       if (fn) {
         const result = await fn(context as Injected<Context, Injects>);
         if (result instanceof Response) {
-          return result;
+          return { context, response: result };
         }
       }
-      return null;
+      return { context, response: null };
     } catch (e: unknown) {
       if (e instanceof Exception) {
-        return context.res.json({
-          success: false,
-          data: null,
-          status: e.status,
-          statusText: e.statusText,
-          headers: e.headers,
-          error: e.error,
-        });
+        return {
+          context,
+          response: Res.json({
+            success: false,
+            data: null,
+            status: e.status,
+            statusText: e.statusText,
+            headers: e.headers,
+            error: e.error,
+          }),
+        };
       } else if (e instanceof Response) {
-        return e;
+        return { context, response: e };
       } else if (
         typeof e === "object" && e !== null && "success" in e && "data" in e && "status" in e && "error" in e
       ) {
-        return context.res.json(e);
+        return { context, response: Res.json(e) };
       } else {
         console.error("[CRITICAL SYSTEM ERROR]", e);
-        return context.res.json({
-          success: false,
-          data: null,
-          status: 500,
-          statusText: "Internal Server Error",
-          headers: {},
-          error: "Internal Server Error",
-        });
+        return {
+          context,
+          response: Res.json({
+            success: false,
+            data: null,
+            status: 500,
+            statusText: "Internal Server Error",
+            headers: {},
+            error: "Internal Server Error",
+          }),
+        };
       }
     }
   };
@@ -115,17 +144,24 @@ function createProxyCallable<Injects extends InjectMap>(
     }
 
     const params = await payload.params;
-    const context = new Context(req, params, injects, { shared: await mintRequestId() });
+    const shared = await mintRequestId();
 
-    const res = await runWithCatch(context, fn);
-    if (res) return res;
+    const { context, response } = await runWithCatch(
+      () => new Context(req, params, injects, { shared }),
+      fn
+    );
+    if (response) return response;
 
-    return context.res.next(context.init);
+    /* Reaching here means runWithCatch returned no response, which only
+       happens on its success path — the one branch that always assigns
+       `context` before returning. The `!` is safe for that reason, not
+       because TypeScript can see it. */
+    return context!.res.next(context!.init);
   };
 
   const handler = (req: NextRequest, payload: RoutePayload) => serve(req, payload);
 
-  const callable = handler as IProxyCallable<Injects>;
+  const callable = handler as IGatewayCallable<Injects>;
 
   callable.use = (...newMiddlewares) => {
     return createProxyCallable(injects, [...middlewares, ...newMiddlewares]);
@@ -153,7 +189,7 @@ function createProxyCallable<Injects extends InjectMap>(
  *
  * @example
  * // src/proxy.ts
- * export const proxy = Proxy({ tokens: Tokens, jwt: Jwt }).use(bearer);
+ * export const proxy = Gateway({ tokens: Tokens, jwt: Jwt }).use(bearer);
  *
  * export const config = {
  *   matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
@@ -162,11 +198,11 @@ function createProxyCallable<Injects extends InjectMap>(
  * @param injects - Tokens to put on the context, or a middleware to run directly.
  * @returns A callable middleware that also has `use` and `proxy`.
  */
-function ProxyBase<Injects extends InjectMap = {}>(injects?: Injects): IProxyCallable<Injects>;
-function ProxyBase(handle: MiddlewareFn<Context>): ProxyNextHandler;
+function ProxyBase<Injects extends InjectMap = {}>(injects?: Injects): IGatewayCallable<Injects>;
+function ProxyBase(handle: MiddlewareFn<Context>): GatewayNextHandler;
 function ProxyBase(
   arg?: InjectMap | MiddlewareFn<Context>
-): ProxyNextHandler | IProxyCallable<InjectMap> {
+): GatewayNextHandler | IGatewayCallable<InjectMap> {
   if (typeof arg === "function") {
     return createProxyCallable<InjectMap>({} as InjectMap).proxy(arg as MiddlewareFn<Context>);
   }
@@ -174,11 +210,11 @@ function ProxyBase(
   return createProxyCallable<InjectMap>((arg ?? {}) as InjectMap);
 }
 
-/** The callable {@link Proxy} plus its statics. */
-export interface ProxyFactory {
-  <Injects extends InjectMap = {}>(injects?: Injects): IProxyCallable<Injects>;
-  (handle: MiddlewareFn<Context>): ProxyNextHandler;
-  readonly use: (...middlewares: MiddlewareFn<Context>[]) => IProxyCallable<{}>;
+/** The callable {@link Gateway} plus its statics. */
+export interface GatewayFactory {
+  <Injects extends InjectMap = {}>(injects?: Injects): IGatewayCallable<Injects>;
+  (handle: MiddlewareFn<Context>): GatewayNextHandler;
+  readonly use: (...middlewares: MiddlewareFn<Context>[]) => IGatewayCallable<{}>;
 }
 
 const ProxyImpl = Object.assign(ProxyBase, {});
@@ -195,5 +231,5 @@ Object.defineProperties(ProxyImpl, {
   },
 });
 
-/** See {@link ProxyBase}. `Proxy.use(...)` starts a chain with no injected tokens. */
-export const Proxy = ProxyImpl as ProxyFactory;
+/** See {@link ProxyBase}. `Gateway.use(...)` starts a chain with no injected tokens. */
+export const Gateway = ProxyImpl as GatewayFactory;

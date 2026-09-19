@@ -273,8 +273,8 @@ test("T2: every name CHANGELOG lists as Added actually exists in the dist/ surfa
  * ---------------------------------------------------------------------- */
 
 test("T3: every name CHANGELOG lists as removed no longer exists in the dist/ surface", () => {
-  assert.equal(removedFrom110.length, 8, "the 1.1.0 -> 2.0.0 removed list must be exactly 8 names");
-  assert.equal(removedFrom10x.length, 7, "the 1.0.x -> 2.0.0 removed list must be exactly 7 names");
+  assert.equal(removedFrom110.length, 12, "the 1.1.0 -> 2.0.0 removed list must be exactly 12 names");
+  assert.equal(removedFrom10x.length, 11, "the 1.0.x -> 2.0.0 removed list must be exactly 11 names");
 
   const stillThere = [...removedFrom10x, ...removedFrom110].filter((n) => surface.names.has(n));
   assert.deepEqual(stillThere, [], `CHANGELOG claims these are gone, but dist/ still exports them: ${stillThere.join(", ")}`);
@@ -322,7 +322,7 @@ test("T4: CHANGELOG's added-since-1.0.x list equals the fixture's recorded set",
  * mandatory "nới biên" mutants, C15/C16).
  * ---------------------------------------------------------------------- */
 
-test("fixture arithmetic: 70 - 7 + 12 === 75 and 81 - 8 + 2 === 75", () => {
+test("fixture arithmetic: 70 - 11 + 16 === 75 and 81 - 12 + 6 === 75", () => {
   const f102 = fixture["1.0.2"];
   const f110 = fixture["1.1.0"];
   assert.equal(f102.names - f102.removedIn200.length + f102.addedIn200.length, 75);

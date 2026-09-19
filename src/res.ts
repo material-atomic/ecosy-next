@@ -71,7 +71,7 @@ export class Res {
 
   /**
    * Continues to the next middleware or the route itself, optionally rewriting
-   * the request. Only meaningful inside a {@link Proxy}.
+   * the request. Only meaningful inside a {@link Gateway}.
    *
    * @param init - Response init, optionally carrying modified request headers.
    */

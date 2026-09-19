@@ -5,10 +5,10 @@ import { defineTokens } from "./container";
  * Injects dependencies onto an existing object, one property per key. This is
  * how {@link Route} puts tokens on a request context.
  *
- * Each property is a getter onto the token's shared instance, built the first
- * time any property for that class is read. Properties are
- * `enumerable` and `configurable` but not guarded, so a key that already exists
- * is replaced.
+ * Each property holds the token's shared instance directly, built the moment
+ * this call runs — not deferred to whenever something happens to read it.
+ * Properties are `enumerable`, `writable` and `configurable` but not guarded,
+ * so a key that already exists is replaced.
  *
  * @example
  * const ctx = { request };
@@ -29,10 +29,11 @@ export function inject<Obj, Injects extends InjectMap>(obj: Obj, injects: Inject
  * `extends` is how they arrive — no wrapper object, no container to register
  * with.
  *
- * Tokens are not constructed with the class: every instance of it, and every
- * context anywhere else naming the same token, reads the one instance of that
- * token, built on first read. A token therefore must not keep per-request state
- * on itself — that belongs on the request's {@link Context}.
+ * Every instance of the built class, and every context anywhere else naming
+ * the same token, reads the one instance of that token — built the first
+ * time any request needs it in this process, then reused for good. A token
+ * therefore must not keep per-request state on itself — that belongs on the
+ * request's {@link Context}.
  *
  * @example
  * class Vendor extends Inject({ fetcher: HttpClient }) {

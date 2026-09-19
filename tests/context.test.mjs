@@ -8,7 +8,7 @@ import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 
 const require = createRequire(import.meta.url);
-const { Context, Memory, Proxy, Route } = require("../dist/index.js");
+const { Context, Memory, Gateway, Route } = require("../dist/index.js");
 const { RequestStore } = require("../dist/request-store.js");
 const { NextRequest } = require("next/server");
 
@@ -105,7 +105,7 @@ test("a local Context built with no fourth constructor argument defaults to its 
 /* A shared-branch Context is the shape 0022/0023/0024 will keep changing, but
    Context.get reading through RequestStore rather than a local object is
    this task's to net — the branch itself is already exercised end to end via
-   Proxy→Route in request-id.test.mjs.
+   Gateway→Route in request-id.test.mjs.
 
    0022 update: Context.set now adds a "$" prefix before a key ever reaches
    RequestStore, so the physical key is "$k", not "k" — this is the exact
@@ -846,7 +846,7 @@ test('for every pair of keys below, differing on exactly one axis (leading/trail
 
 /* ---------------------------------------------------------------------- */
 /* 11. 0022: the "$" prefix is added at exactly one layer — Context — and */
-/*     nowhere else. Proxy's set() and Route's get() run in separate      */
+/*     nowhere else. Gateway's set() and Route's get() run in separate      */
 /*     module graphs (see request-id.test.mjs's own note on this), so    */
 /*     this can only be checked by actually sending a value across that   */
 /*     boundary in one process, not by building a Context by hand on     */
@@ -865,8 +865,8 @@ function forwarded(response) {
   return headers;
 }
 
-test("a value a Proxy's middleware sets survives the handoff and is read back by a Route under the same key", async () => {
-  const proxy = Proxy({}).use((ctx) => ctx.set("layerUserId", "u-layer-1"));
+test("a value a Gateway's middleware sets survives the handoff and is read back by a Route under the same key", async () => {
+  const proxy = Gateway({}).use((ctx) => ctx.set("layerUserId", "u-layer-1"));
   const id = forwarded(await proxy(new NextRequest(url("/page")), payload())).get(REQUEST_ID);
 
   const { GET } = Route().get((ctx) => ctx.get("layerUserId") ?? null);
@@ -874,8 +874,8 @@ test("a value a Proxy's middleware sets survives the handoff and is read back by
   assert.equal((await res.json()).data, "u-layer-1");
 });
 
-test('a value a Proxy\'s middleware sets is held in RequestStore under the prefixed key "$layerUserId", never under the bare "layerUserId"', async () => {
-  const proxy = Proxy({}).use((ctx) => ctx.set("layerUserId", "u-layer-2"));
+test('a value a Gateway\'s middleware sets is held in RequestStore under the prefixed key "$layerUserId", never under the bare "layerUserId"', async () => {
+  const proxy = Gateway({}).use((ctx) => ctx.set("layerUserId", "u-layer-2"));
   const id = forwarded(await proxy(new NextRequest(url("/page")), payload())).get(REQUEST_ID);
 
   const stored = RequestStore.peek(id);
@@ -915,21 +915,21 @@ test('destroy() clears a "__proto__" key mixed with ordinary keys, leaving none 
 });
 
 /* ---------------------------------------------------------------------- */
-/* 13. 0022: a poisoned "__proto__" a Proxy hands to a Route never        */
+/* 13. 0022: a poisoned "__proto__" a Gateway hands to a Route never        */
 /*     reaches the Route's read of an unrelated key — the same chain with */
 /*     a real key does carry the value, so the check above is not        */
 /*     vacuous.                                                           */
 /* ---------------------------------------------------------------------- */
 
-test('a Proxy\'s __proto__ poisoning never reaches a Route\'s read of "role", while the same chain with a real "role" value does — so the check is not vacuous', async () => {
-  const poisoned = Proxy({}).use((ctx) => ctx.set("__proto__", { role: "root" }));
+test('a Gateway\'s __proto__ poisoning never reaches a Route\'s read of "role", while the same chain with a real "role" value does — so the check is not vacuous', async () => {
+  const poisoned = Gateway({}).use((ctx) => ctx.set("__proto__", { role: "root" }));
   const poisonedId = forwarded(await poisoned(new NextRequest(url("/page")), payload())).get(REQUEST_ID);
 
   const { GET } = Route().get((ctx) => ctx.get("role") ?? null);
   const poisonedRes = await GET(new NextRequest(url(), { headers: { [REQUEST_ID]: poisonedId } }), payload());
-  assert.equal((await poisonedRes.json()).data, null, "the Route read a role from a Proxy that never set one");
+  assert.equal((await poisonedRes.json()).data, null, "the Route read a role from a Gateway that never set one");
 
-  const real = Proxy({}).use((ctx) => ctx.set("role", "root"));
+  const real = Gateway({}).use((ctx) => ctx.set("role", "root"));
   const realId = forwarded(await real(new NextRequest(url("/page")), payload())).get(REQUEST_ID);
   const realRes = await GET(new NextRequest(url(), { headers: { [REQUEST_ID]: realId } }), payload());
   assert.equal((await realRes.json()).data, "root", "a real 'role' value did not survive the same chain — the check above would have been vacuous");
@@ -1195,7 +1195,7 @@ test("calling ctx.next() a second time, with no arguments, never sees a header t
   assert.equal(second.get("base"), "b1", "setHeader's own value must still be there on the second call");
 });
 
-test("two ways of ending a middleware — `ctx.setHeader(...); return ctx.next();` versus `ctx.setHeader(...);` with no return at all — forward the exact same set of headers, through every way a Proxy can be built", async () => {
+test("two ways of ending a middleware — `ctx.setHeader(...); return ctx.next();` versus `ctx.setHeader(...);` with no return at all — forward the exact same set of headers, through every way a Gateway can be built", async () => {
   const withReturn = (ctx) => { ctx.setHeader("x-a", "1"); return ctx.next(); };
   const withoutReturn = (ctx) => { ctx.setHeader("x-a", "1"); };
   const noop = () => {};
@@ -1217,9 +1217,9 @@ test("two ways of ending a middleware — `ctx.setHeader(...); return ctx.next()
     }
   }
 
-  await compare((fn) => Proxy.use(fn).proxy());
-  await compare((fn) => Proxy.use(fn).proxy(noop)); // .use(f).proxy(g) — g runs only when f falls through
-  await compare((fn) => Proxy(fn));
+  await compare((fn) => Gateway.use(fn).proxy());
+  await compare((fn) => Gateway.use(fn).proxy(noop)); // .use(f).proxy(g) — g runs only when f falls through
+  await compare((fn) => Gateway(fn));
 });
 
 test("0023 §6, end-to-end through dist: ctx.next() never drops a client header a middleware never touched — cookie, authorization and a custom header all ride through to the Route, alongside whatever the middleware itself set", async () => {
@@ -1229,7 +1229,7 @@ test("0023 §6, end-to-end through dist: ctx.next() never drops a client header 
      `serve()` — not a `ctx.next()` call written inside the middleware. Both
      paths funnel through the same `next()`/`Res.next`, but this is the shape
      0024's cookieJar and 0025's csrf are actually going to run through. */
-  const proxy = Proxy({}).use((ctx) => { ctx.setHeader("x-mw-added", "mw-1"); });
+  const proxy = Gateway({}).use((ctx) => { ctx.setHeader("x-mw-added", "mw-1"); });
 
   const clientHeaders = {
     cookie: "session=abc123",
@@ -1391,8 +1391,8 @@ test("normalizing in place is observable on purpose: a caller holding its own se
   assert.equal("userId" in seed, false);
 });
 
-test("0023 end-to-end: a value a Proxy's middleware sets still reaches the Route correctly — the constructor's normalization loop leaves an already-prefixed claim() result alone", async () => {
-  const proxy = Proxy({}).use((ctx) => ctx.set("normCheck", "n1"));
+test("0023 end-to-end: a value a Gateway's middleware sets still reaches the Route correctly — the constructor's normalization loop leaves an already-prefixed claim() result alone", async () => {
+  const proxy = Gateway({}).use((ctx) => ctx.set("normCheck", "n1"));
   const id = forwarded(await proxy(new NextRequest(url("/api/x")), payload())).get(REQUEST_ID);
 
   const { GET } = Route().get((ctx) => ctx.get("normCheck") ?? null);

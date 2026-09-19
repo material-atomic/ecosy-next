@@ -18,6 +18,7 @@ duy nhất phá tương thích trên bề mặt tên là `Instrument` biến m�
 | Cái gì đổi | Nguồn |
 |---|---|
 | `Instrument` gỡ hẳn: bảy tên biến mất khỏi entry gốc — `Instrument`, `InstrumentBase`, `IInstrumentBuilder`, `InstrumentConfig`, `InstrumentHandler`, `InstrumentErrorHandler`, `InstrumentParam`. `import { Instrument }` vỡ lúc biên dịch. Thay bằng gọi `bootstrap.init()` thẳng trong `register()` của `instrumentation.ts`. | `895a9e6` + task 0030 |
+| `Proxy` → `Gateway`: bốn tên đổi — `Proxy`, `ProxyFactory`, `IProxyCallable`, `ProxyNextHandler` biến mất, thay bằng `Gateway`, `GatewayFactory`, `IGatewayCallable`, `GatewayNextHandler`. `import { Proxy }` vỡ lúc biên dịch. Lý do: `const { Proxy } = require("@ecosy/next")` ở global lexical scope (một `node -e`, một REPL, một script chạy qua `vm` dùng chung global) che mất `Proxy` dựng sẵn của JavaScript cho mọi module khác trong cùng tiến trình, và `NextResponse` của Next tự gọi `new Proxy(...)` bên trong. `Gateway` không đụng tên toàn cục nào. | task 0064 |
 
 Ví dụ thay thế:
 
@@ -34,21 +35,23 @@ export async function register() {
 ```
 
 <!-- surface:removed-from-1.0.x -->
-`IInstrumentBuilder`, `Instrument`, `InstrumentBase`, `InstrumentConfig`,
-`InstrumentErrorHandler`, `InstrumentHandler`, `InstrumentParam`
+`IInstrumentBuilder`, `IProxyCallable`, `Instrument`, `InstrumentBase`,
+`InstrumentConfig`, `InstrumentErrorHandler`, `InstrumentHandler`,
+`InstrumentParam`, `Proxy`, `ProxyFactory`, `ProxyNextHandler`
 <!-- /surface:removed-from-1.0.x -->
 
 #### Added
 
 | Cái gì | Nguồn |
 |---|---|
-| `cookieJar(ctx?)` — cổng cookie đọc/ghi cho Route, Proxy và Server Component qua `next/headers`. Một cookie đặt ở Proxy được route cùng request đọc lại ngay, không đợi round-trip qua browser. Bốn tên: `cookieJar`, `CookieJar`, `CookieJarOptions`, `CookieForwarding`. | task 0024 |
+| `cookieJar(ctx?)` — cổng cookie đọc/ghi cho Route, Gateway và Server Component qua `next/headers`. Một cookie đặt ở Gateway được route cùng request đọc lại ngay, không đợi round-trip qua browser. Bốn tên: `cookieJar`, `CookieJar`, `CookieJarOptions`, `CookieForwarding`. | task 0024 |
 | Chỗ cắm CSRF vào Next — bảy tên: `csrfOrigin`, `csrfGuard`, `CsrfPort`, `CsrfPortClass`, `IdentityPort`, `CsrfGuardOptions`, `CsrfContext`. Gói **không** ship một hiện thực CSRF hay session nào; cả hai vẫn là việc của app. | task 0025 |
 | `ContextValues` — kiểu của `values` khi dựng `Context` bằng tay. | task 0023 |
 
 <!-- surface:added-since-1.0.x -->
 `ContextValues`, `CookieForwarding`, `CookieJar`, `CookieJarOptions`,
-`CsrfContext`, `CsrfGuardOptions`, `CsrfPort`, `CsrfPortClass`, `IdentityPort`,
+`CsrfContext`, `CsrfGuardOptions`, `CsrfPort`, `CsrfPortClass`, `Gateway`,
+`GatewayFactory`, `GatewayNextHandler`, `IGatewayCallable`, `IdentityPort`,
 `cookieJar`, `csrfGuard`, `csrfOrigin`
 <!-- /surface:added-since-1.0.x -->
 
@@ -59,6 +62,7 @@ export async function register() {
 | Cái gì đổi | Nguồn |
 |---|---|
 | `Instrument` gỡ hẳn — cùng bảy tên và cùng lý do ở trên (mục "Nâng cấp từ 1.0.x"). | `895a9e6` + task 0030 |
+| `Proxy` → `Gateway` — cùng bốn tên và cùng lý do ở trên (mục "Nâng cấp từ 1.0.x"). | task 0064 |
 | `SessionPort` → `IdentityPort`, và khoá `csrfGuard({ session })` → `{ identity }`. Cả hai là API công khai của 1.1.0 qua `export * from "./csrf"` trên entry gốc. Lý do: cổng đó trả về một id để buộc token vào — nó cung cấp danh tính, không phải kho — và chữ "Session" để dành cho vai kho. | task 0025 |
 
 **Dòng di trú, chép-dán được** (task 0025):
@@ -99,8 +103,9 @@ hệt hành vi của 1.1.0** (đo trên `dist/csrf.mjs` đã phát hành); đó 
 một thay đổi.
 
 <!-- surface:removed-from-1.1.0 -->
-`IInstrumentBuilder`, `Instrument`, `InstrumentBase`, `InstrumentConfig`,
-`InstrumentErrorHandler`, `InstrumentHandler`, `InstrumentParam`, `SessionPort`
+`IInstrumentBuilder`, `IProxyCallable`, `Instrument`, `InstrumentBase`,
+`InstrumentConfig`, `InstrumentErrorHandler`, `InstrumentHandler`,
+`InstrumentParam`, `Proxy`, `ProxyFactory`, `ProxyNextHandler`, `SessionPort`
 <!-- /surface:removed-from-1.1.0 -->
 
 #### Added
@@ -109,9 +114,11 @@ một thay đổi.
 |---|---|
 | `IdentityPort` — thay `SessionPort`, thân không đổi. | task 0025 |
 | `ContextValues` — kiểu của `values` khi dựng `Context` bằng tay. | task 0023 |
+| `Gateway` — thay `Proxy`, cùng hành vi, thân không đổi. | task 0064 |
 
 <!-- surface:added-since-1.1.0 -->
-`ContextValues`, `IdentityPort`
+`ContextValues`, `Gateway`, `GatewayFactory`, `GatewayNextHandler`,
+`IGatewayCallable`, `IdentityPort`
 <!-- /surface:added-since-1.1.0 -->
 
 ### Thay đổi hành vi (cả hai đường đều gặp)
@@ -121,12 +128,64 @@ một thay đổi.
 | Cái gì | Nguồn |
 |---|---|
 | Token dùng chung vòng đời: một instance mỗi class mỗi lớp Next, không phải một per request. Khoá `Bootstrap` đổi. | `1225854` |
+| Token được dựng cùng lúc với context nó gắn vào, không phải lúc một handler đọc thuộc tính lần đầu. Một `Route`/`Gateway` khai một token mà không handler nào đọc vẫn dựng token đó. Mỗi token vẫn là một `Object.entries` — mỗi thuộc tính là một own, enumerable, writable property gán thẳng, không phải một accessor: `Object.keys(ctx)`, object spread (`{...ctx}`) và `JSON.stringify(ctx)` đều thấy nó, giống 1.1.0 và giống 2.0.0 trước bản vá này. | task 0064 |
+| Một handler ghi đè được `ctx.db` (hay bất cứ tên token nào khác) — ở 1.1.0 và ở 2.0.0 trước bản vá này, gán vào đó ném `TypeError` dưới ESM/strict; nay nó nhận, im lặng. Việc ghi đè chỉ ảnh hưởng context của request đó — request kế tiếp lại đọc đúng token gốc. | task 0064 |
 | `x-ecosyrequest-id` đổi hình dạng: từ UUID trần thành `<uuid>.<43 ký tự base64url>`, có chữ ký. | `1225854` |
-| Proxy luôn tự cấp id mới; id client gửi không bao giờ được dùng lại. Id không hợp lệ dẫn tới **400 trước mọi middleware**. | `1225854` |
+| Gateway luôn tự cấp id mới; id client gửi không bao giờ được dùng lại. Id không hợp lệ dẫn tới **400 trước mọi middleware**. | `1225854` |
 | Route từ chối id không do tiến trình này cấp — ba lý do khác nhau, ba thông điệp. Caller nào đang tự đặt header bằng tay để gọi thẳng API route sẽ vỡ. | `1225854` |
 | `ctx.next()` không đối số nay chuyển tiếp header dựa trên `this.init.request.headers` — mọi `setHeader`/`delete` một middleware đã làm đi ra đúng như vậy. Trước đây chỉ header client gửi nguyên vẹn mới chắc chắn đi ra. Header một app nhìn thấy ở Route sẽ khác trước. | task 0023, `db3c75d` |
-| Handoff Proxy→Route đi qua một kho có trần 10 000 entry và TTL 60 giây, thay cho một `Map` process-wide không giới hạn. | `1225854` |
-| Khoá của `ctx.set`/`ctx.get` không còn với tới prototype của cái túi. Trước đó `set("__proto__", …)` làm mọi khoá chưa ai đặt bắt đầu trả lời, `destroy()` không dọn được, và cái túi bị đầu độc đi xuyên Proxy→Route. | task 0022 |
+| Handoff Gateway→Route đi qua một kho có trần 10 000 entry và TTL 60 giây, thay cho một `Map` process-wide không giới hạn. | `1225854` |
+| Khoá của `ctx.set`/`ctx.get` không còn với tới prototype của cái túi. Trước đó `set("__proto__", …)` làm mọi khoá chưa ai đặt bắt đầu trả lời, `destroy()` không dọn được, và cái túi bị đầu độc đi xuyên Gateway→Route. | task 0022 |
+| Một token ném lúc dựng (constructor lỗi) nay ném ngay khi `Route`/`Gateway` dựng context, thay vì lúc handler đọc thuộc tính đó lần đầu. Vẫn đi qua đúng `.filter()`/hook lỗi và vẫn ra 500 (Route) hay đáp lỗi (Gateway) đúng hình dạng cũ — chỉ thời điểm ném dịch sớm hơn trong cùng request, không đổi đường đi của lỗi. | task 0064 |
+
+#### State trên một token sống lâu hơn một request — không phải hoạ hoằn, tất định
+
+Một token là một instance mỗi class **cho cả tiến trình**, không phải một
+instance mỗi request (dòng đầu tiên của bảng trên). Điều đó có từ 2.0.0, giữ
+nguyên qua bản vá này, và nó có nghĩa là: bất cứ gì một handler ghi lên chính
+instance của token — không phải lên `ctx` — request sau đọc lại đúng giá trị
+đó, **luôn luôn**, không phải khi tải cao hay khi đua nhau.
+
+Hình dạng **sai** — giữ state của một request trên token:
+
+```ts
+class CurrentUser {
+  // KHÔNG làm vậy: currentUser sống cùng CurrentUser, tức cùng tiến trình.
+  currentUser?: { id: string };
+}
+
+export const GET = Route({ user: CurrentUser }).get((ctx) => {
+  ctx.user.currentUser = { id: ctx.get("userId") };
+  return ctx.user.currentUser;
+});
+```
+
+Request thứ hai, của một user khác, đọc lại `currentUser` của request đầu —
+`ctx.user` là cùng một object cho mọi request đi qua process này.
+
+Hình dạng **đúng** — giữ state của request trên `ctx`, không trên token:
+
+```ts
+class CurrentUser {
+  // Không trường nào giữ state theo request.
+}
+
+export const GET = Route({ user: CurrentUser }).get((ctx) => {
+  ctx.set("currentUser", { id: ctx.get("userId") });
+  return ctx.get("currentUser");
+});
+```
+
+`ctx.set`/`ctx.get` đọc/ghi vào cái túi riêng của context đó (`RequestStore`
+sau một `Gateway`, một bag `local` mới cho mỗi `Context` khác) — không bao giờ
+đi xuyên request.
+
+Ai nâng cấp từ 1.1.0 và đang giữ state theo request trên chính token — 1.1.0
+dựng một instance mới mỗi lần inject nên lỗi này không có đất sống ở đó — sẽ
+thấy nó vỡ ngay từ **request thứ hai**, không phải một lỗi hoạ hoằn dưới tải.
+Đo bằng `tests/token-lifetime.test.mjs` (task 0064): N request tuần tự qua
+cùng một token, N−1 trong số đó đọc lại đúng state request trước ghi (request
+đầu tiên của tiến trình không có ai đứng trước nó).
 
 #### Fixed
 

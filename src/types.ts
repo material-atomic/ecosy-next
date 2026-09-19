@@ -23,9 +23,11 @@ export interface MiddlewareResponseInit extends globalThis.ResponseInit {
  * needing configuration is produced by a factory that captures it and returns
  * such a class.
  *
- * A token is constructed on first use and shared by every request — keep
- * per-request state off it. Once per class, and a class is one per module graph
- * that evaluates it; anchor it with `@ecosy/anchor` for one per process.
+ * A token is constructed the first time any request in this process declares
+ * it — not the first time a handler reads the property — and the same
+ * instance is shared by every request after that. Keep per-request state off
+ * it. Once per class, and a class is one per module graph that evaluates it;
+ * anchor it with `@ecosy/anchor` for one per process.
  */
 export type ClassType<Instance = unknown> = new () => Instance;
 
@@ -50,7 +52,7 @@ export type Injected<Context, Injects extends InjectMap> = Context & RemoveIndex
 }>;
 
 /**
- * A {@link Proxy} middleware. Returning a `Response` stops the chain and sends
+ * A {@link Gateway} middleware. Returning a `Response` stops the chain and sends
  * it; returning anything else continues to the next one.
  */
 export interface MiddlewareFn<Context> {

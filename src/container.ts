@@ -66,10 +66,25 @@ export function resolve<Instance>(Token: ClassType<Instance>): Instance {
 }
 
 /**
- * Defines one getter per token on `target`. Nothing is constructed here: a
- * token is built the first time any getter for its class is read, anywhere.
+ * Puts one own, enumerable, writable property per token straight onto
+ * `target` — the instance {@link resolve} hands back for that class, not a
+ * getter onto it. Every token is built right here, before this function
+ * returns: a route that declares five tokens and reads none of them still
+ * builds all five, because the class-level cache in {@link resolve} means
+ * "build" only actually runs once per class per process — every request
+ * after the first just pays a WeakMap lookup and an assignment for a token
+ * nobody reads.
  *
- * @param target - The object to define the properties on.
+ * That trade only exists because own data properties, not accessor
+ * properties, are what let `target` show up correctly under
+ * `Object.keys`, object spread and `JSON.stringify` — a `get` accessor
+ * defined with `Object.defineProperty` is invisible to all three unless it
+ * is read first, which is exactly what a plain object built by spreading a
+ * context (a log line, a `filter` hook) was never going to do. See task
+ * 0064: a getter-based v3 measured faster in isolation but silently dropped
+ * every token from `{...ctx}` and `JSON.stringify(ctx)`.
+ *
+ * @param target - The object to assign the properties onto.
  * @param injects - Property name to class token.
  */
 export function defineTokens(target: object, injects: InjectMap) {
@@ -78,10 +93,6 @@ export function defineTokens(target: object, injects: InjectMap) {
       throw new TypeError(`@ecosy/next: token "${key}" is not a class`);
     }
 
-    Object.defineProperty(target, key, {
-      get: () => resolve(Token),
-      enumerable: true,
-      configurable: true,
-    });
+    (target as Record<string, unknown>)[key] = resolve(Token);
   }
 }

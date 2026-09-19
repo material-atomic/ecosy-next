@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { cookieJar, Proxy, Route } = require("../dist/index.js");
+const { cookieJar, Gateway, Route } = require("../dist/index.js");
 const { NextRequest } = require("next/server");
 const { reset, seed, sets } = require("./support/next-headers.cjs");
 
@@ -34,7 +34,7 @@ function forwarded(response) {
 /** A minimal `CookieForwarding`: just `req.headers.get("cookie")` and a
  *  `setHeader` a test can spy on. `Context` satisfies the same shape (that
  *  is §6's job, further down) — this one exists so §§1-5 can test the jar
- *  on its own, without a whole Proxy/Route round trip in the way. */
+ *  on its own, without a whole Gateway/Route round trip in the way. */
 function fakeForwarding(cookieHeader, calls = []) {
   return {
     req: { headers: new Headers(cookieHeader != null ? { cookie: cookieHeader } : {}) },
@@ -346,7 +346,7 @@ function parseCookieHeader(header) {
 
 async function runProxyThenRoute(middleware) {
   reset();
-  const proxy = Proxy({}).use(middleware);
+  const proxy = Gateway({}).use(middleware);
   const proxied = await proxy(new NextRequest(url("/page")), payload());
   const nextHeaders = forwarded(proxied);
 
@@ -357,7 +357,7 @@ async function runProxyThenRoute(middleware) {
   return { data: (await res.json()).data, cookieHeader: nextHeaders.get("cookie") };
 }
 
-test("0024 §6, end-to-end through dist: cookieJar(ctx).set(\"sid\", \"abc\", {}) in a Proxy middleware is read back as \"abc\" via cookieJar() in the Route, for BOTH ways a middleware can end — this is the promise 0023 bought and this task stands on", async () => {
+test("0024 §6, end-to-end through dist: cookieJar(ctx).set(\"sid\", \"abc\", {}) in a Gateway middleware is read back as \"abc\" via cookieJar() in the Route, for BOTH ways a middleware can end — this is the promise 0023 bought and this task stands on", async () => {
   const withReturn = async (ctx) => {
     const jar = await cookieJar(ctx);
     await jar.set("sid", "abc", {});
@@ -372,7 +372,7 @@ test("0024 §6, end-to-end through dist: cookieJar(ctx).set(\"sid\", \"abc\", {}
   const a = await runProxyThenRoute(withReturn);
   const b = await runProxyThenRoute(withoutReturn);
 
-  assert.equal(a.data, "abc", "`return ctx.next();` must let the Route read the cookie the Proxy set");
+  assert.equal(a.data, "abc", "`return ctx.next();` must let the Route read the cookie the Gateway set");
   assert.equal(b.data, "abc", "no return at all must let the Route read the SAME cookie — this is exactly what 0023 fixed");
   assert.equal(a.cookieHeader, b.cookieHeader, "both endings must forward the identical cookie header — not just an identical outcome after re-parsing it");
 });
