@@ -2,6 +2,7 @@
 import { Injected, InjectMap, MiddlewareFn, RoutePayload } from "./types";
 import { NextRequest } from "next/server";
 import { Context } from "./context";
+import { withTokens } from "./container";
 import { Exception } from "./exception";
 import { Res } from "./res";
 import { checkRequestId, mintRequestId } from "./request-id";
@@ -41,6 +42,9 @@ function createProxyCallable<Injects extends InjectMap>(
   injects: Injects,
   middlewares: MiddlewareFn<Injected<Context, Injects>>[] = []
 ): IProxyCallable<Injects> {
+  /* Một lần cho cả proxy này, không phải một lần mỗi request — xem `withTokens`. */
+  const ProxyContext = withTokens(Context, injects);
+
   /* Building a Proxy — not importing this module — marks the app as proxied.
      The root entry re-exports this module, so activating on import proxied
      every app that imported anything from the package, Proxy or not. From here
@@ -115,7 +119,7 @@ function createProxyCallable<Injects extends InjectMap>(
     }
 
     const params = await payload.params;
-    const context = new Context(req, params, injects, { shared: await mintRequestId() });
+    const context = new ProxyContext(req, params, undefined, { shared: await mintRequestId() });
 
     const res = await runWithCatch(context, fn);
     if (res) return res;

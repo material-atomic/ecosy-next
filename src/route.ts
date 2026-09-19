@@ -4,6 +4,7 @@ import { checkRequestId } from "./request-id";
 import { REQUEST_ID, RequestStore } from "./request-store";
 import { NextRequest } from "next/server";
 import { Context, Memory } from "./context";
+import { withTokens } from "./container";
 import { Injected, InjectMap, RouteHandler, RouteNextHandler, RoutePayload } from "./types";
 import { Exception } from "./exception";
 
@@ -163,6 +164,7 @@ class RouteBuilder<Injects extends InjectMap = {}, Methods extends Record<string
 
   private _createHandler(fn: RouteHandler<Context, Injects>): RouteNextHandler {
     const injectsMap = this.injects;
+    const RouteContext = withTokens(Context, injectsMap);
     const middlewares = this.middlewares;
     const localFilter = this.localFilter;
 
@@ -170,7 +172,11 @@ class RouteBuilder<Injects extends InjectMap = {}, Methods extends Record<string
       let res: Response;
       
       const params = await payload.params;
-      const context = new Context(req, params, injectsMap, await takeProxyValues(req));
+      /* Lớp con mang sẵn getter, dựng một lần cho route này rồi dùng lại.
+         Truyền `undefined` cho tham số `injects` vì các getter đã nằm trên
+         prototype — để nguyên `injectsMap` là định nghĩa lại chúng lần nữa
+         trên chính instance, tức là trả cả hai lần tiền. */
+      const context = new RouteContext(req, params, undefined, await takeProxyValues(req));
 
       try {
         try {

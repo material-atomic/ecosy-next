@@ -85,3 +85,56 @@ export function defineTokens(target: object, injects: InjectMap) {
     });
   }
 }
+
+/* Lớp con đã mang sẵn getter, tra theo (lớp gốc, bản đồ token). Hai tầng
+   WeakMap: cùng một bản đồ dùng với hai lớp gốc khác nhau vẫn ra hai lớp con
+   đúng, và không giữ sống lớp nào. */
+const subclasses = new WeakMap<object, WeakMap<object, unknown>>();
+
+/**
+ * A subclass of `Base` whose prototype already carries one getter per token.
+ *
+ * WHY THIS EXISTS. `defineTokens(this, injects)` in a constructor defines an
+ * accessor property per token on every instance, so a route with five tokens
+ * pays five `Object.defineProperty` calls and five closures per request — and
+ * an object that gains accessor properties leaves V8's fast path. Measured on
+ * an M1: that delivery costs ~3200 ns per request against ~1500 ns for the
+ * eager `new Token()` loop it replaced, so the lazy container was *losing* to
+ * the thing it improved on whenever tokens are cheap to build.
+ *
+ * A route's token map is fixed when the route is declared, so the accessors
+ * never need defining more than once. Defining them on a prototype moves that
+ * whole cost to declaration time; a request then pays for `new` and nothing
+ * else. Same laziness, same one-instance-per-class caching, ~100 ns.
+ *
+ * ONE BEHAVIOUR CHANGE, stated rather than buried: tokens become inherited
+ * properties instead of own ones, so `Object.keys(ctx)` and `{...ctx}` no
+ * longer list them, and `JSON.stringify(ctx)` no longer walks into them.
+ * Reading `ctx.db` is unchanged. This happens to match what the docstring on
+ * `Context.set` already claims `JSON.stringify(ctx)` prints, which the own
+ * enumerable accessors did not.
+ *
+ * @param Base - The class to extend, normally `Context`.
+ * @param injects - Property name to class token, fixed for the route.
+ * @returns A cached subclass; the same map and base always give the same one.
+ */
+export function withTokens<T extends abstract new (...args: any[]) => any>(
+  Base: T,
+  injects: InjectMap,
+): T {
+  let theoBảnĐồ = subclasses.get(Base as object);
+  if (!theoBảnĐồ) {
+    theoBảnĐồ = new WeakMap();
+    subclasses.set(Base as object, theoBảnĐồ);
+  }
+
+  const đãCó = theoBảnĐồ.get(injects as object);
+  if (đãCó) {
+    return đãCó as T;
+  }
+
+  const Sub = class extends (Base as unknown as new (...args: any[]) => any) {};
+  defineTokens(Sub.prototype, injects);
+  theoBảnĐồ.set(injects as object, Sub);
+  return Sub as unknown as T;
+}
