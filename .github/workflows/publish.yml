@@ -1,0 +1,303 @@
+name: Publish
+
+# File name is part of the contract: npmjs.com Settings → Trusted publishing
+# → "Workflow filename" must read exactly "publish.yml" (case-sensitive,
+# extension included). Renaming this file means going back to that npm
+# settings page and re-typing it there too — see task 0062 mục 6.2, ported
+# here verbatim because it is the same npm contract, not a repo-specific one.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run every step EXCEPT the real `npm publish` (rehearsal only)'
+        type: boolean
+        default: true
+
+# id-token: write is what lets this job mint an OIDC token at all — without
+# it, npm's trusted-publishing exchange fails with ENEEDAUTH. No NPM_TOKEN,
+# no secrets.* referencing npm anywhere in this file, on purpose.
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest # Trusted Publishing does not support self-hosted runners.
+    steps:
+      # Pinned by commit SHA, not a floating tag. Verified 2026-09-19 with
+      # `gh api repos/actions/checkout/git/refs/tags/v7.0.1` /
+      # `gh api repos/actions/setup-node/git/refs/tags/v7.0.0` — same SHAs
+      # `ecosy-anchor/.github/workflows/publish.yml` verified the same day,
+      # re-checked here rather than copied blind (task instructions: "kiểm
+      # lại SHA, đừng chép mù").
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false # no cache in a release build
+
+      - name: Report toolchain versions actually on this runner
+        run: |
+          echo "node: $(node -v)"
+          echo "npm:  $(npm -v)"
+          echo "yarn: $(yarn -v)"
+
+      # --- npm floor for Trusted Publishing, measured, not assumed. ---
+      # docs.npmjs.com/trusted-publishers: "Trusted publishing requires npm
+      # CLI version 11.5.1 or later". This machine's npm (2026-09-19) is
+      # 10.9.8 — BELOW the floor. "node-version: 24 surely brings a new
+      # enough npm" is exactly the suy diễn the house rules forbid, so this
+      # step reads the real `npm -v` on the runner about to publish and
+      # fails fast, before install/build time is spent, if it is low.
+      - name: Assert npm satisfies the Trusted Publishing floor (>= 11.5.1)
+        run: |
+          NPM_VERSION=$(npm -v)
+          node -e '
+            const [major, minor, patch] = process.argv[1].split(".").map(Number);
+            const [minMajor, minMinor, minPatch] = [11, 5, 1];
+            const ok = major > minMajor
+              || (major === minMajor && minor > minMinor)
+              || (major === minMajor && minor === minMinor && patch >= minPatch);
+            if (!ok) {
+              console.error(`npm ${process.argv[1]} is below 11.5.1, the floor Trusted Publishing requires (docs.npmjs.com/trusted-publishers). Fix: add a step before this one — "npm install -g npm@latest" — or bump node-version in the setup-node step above (a newer Node ships a newer bundled npm).`);
+              process.exit(1);
+            }
+            console.log(`npm ${process.argv[1]} satisfies the Trusted Publishing floor (>= 11.5.1)`);
+          ' "$NPM_VERSION"
+
+      # --- tag must name the version it is about to publish. ---
+      # Skipped on workflow_dispatch (no tag exists yet in that trigger).
+      # Real, present-day case this guards: npm's published `@ecosy/next`
+      # latest is 1.1.0 while this repo's package.json is already 2.0.0
+      # (measured 2026-09-19, `npm view @ecosy/next --json` .dist-tags.latest
+      # vs. this file's package.json) — the exact repo/npm version drift
+      # task 0062 mục 1.4 flagged for this package by name. The same mistake
+      # here (a tag that doesn't name the version being published) would
+      # publish silently under a tag that lies about what it is.
+      - name: Assert the pushed tag names package.json's version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          echo "tag: v$TAG_VERSION   package.json: $PKG_VERSION"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "tag v$TAG_VERSION does not name package.json version $PKG_VERSION — refusing to publish a version the tag doesn't claim to be." >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      # `yarn build` is itself a package.json script (tsc && rollup -c).
+      # That's fine: the "call test directly, not through a package.json
+      # script" rule is about the TEST command specifically — the
+      # release/1.1.0 hole it guards against was a stale-dist TEST run, not
+      # a stale-dist BUILD.
+      - name: Build
+        run: yarn build
+
+      # --- The test command is NOT a bare `node --test`. ---
+      # `@ecosy/next`'s real test command (package.json "test:run") is
+      #   node --import ./tests/hooks.mjs --test tests/*.test.mjs
+      # and the `--import ./tests/hooks.mjs` piece is not decoration: it is
+      # the ONLY thing that (a) stubs `server-only` and `next/headers` for a
+      # plain Node process, which every test file needs just to import, and
+      # (b) throws if dist/ is missing or older than src/ — the guard that
+      # closed the exact release/1.1.0 hole this task's brief warns against
+      # reintroducing ("gọi lệnh test TRỰC TIẾP" must not mean dropping
+      # `--import`). Dropping it here would be rebuilding that hole with a
+      # straight face. So this step runs the FULL literal chain, --import
+      # included, not `node --test tests/*.test.mjs` alone.
+      #
+      # Proof `--import ./tests/hooks.mjs` is actually loaded — measured
+      # 2026-09-19, not inferred from a green suite (a green suite proves
+      # nothing about this by itself, per house rules "một ca XANH chưa nói
+      # lên điều gì"):
+      #   - dist/ deleted, full command run  -> EXIT=1, stack trace names
+      #     tests/hooks.mjs:185, message "dist/ does not exist — run
+      #     `yarn build` before running tests."
+      #   - a src/ file edited without rebuilding, full command run -> EXIT=1,
+      #     stack trace names tests/hooks.mjs:263, message "dist/ is older
+      #     than src/ — these tests would run against a stale build and
+      #     silently lie about the result."
+      #   - same stale dist/, but run WITHOUT --import (bare
+      #     `node --test tests/*.test.mjs`) -> still fails, but for an
+      #     UNRELATED reason (server-only/next-headers resolution errors,
+      #     fewer tests even loading) — proving --import carries load-bearing
+      #     behavior this file cannot do without, in either direction.
+      #   - both fixed (fresh build, no future mtimes) -> EXIT=0.
+      # See task's ## Kết quả for the exact transcripts of all four runs.
+      #
+      # --- The pass-count floor is a REAL number, not a placeholder. ---
+      # A prior workflow in this house (`ecosy-anchor/publish.yml`, task
+      # 0062) shipped with a literal floor of 1 — its Reviewer proved that
+      # deleting 14 of 15 real tests still left the step GREEN, because
+      # `node --test`'s own exit code does not fall with the test count.
+      # Measured here, 2026-09-19, on this exact command against a clean
+      # build: 233 tests, 232 pass, 0 fail, 1 skipped (the one skip is
+      # tests/readme.test.mjs's network-dependent link check, gated behind
+      # `ECOSY_CHECK_LINKS=1` — expected, not a bug). Self-check performed:
+      # removed one whole test file (tests/token-lifetime.test.mjs, exactly
+      # 1 test) and re-ran the SAME command — `node --test`'s own exit code
+      # stayed 0, and the TAP summary silently dropped to 231 pass. Only the
+      # PASS floor below catches that; the exit code alone does not. The
+      # floor is 232 — the measured count, not a round number — because
+      # anything looser reproduces exactly the anchor hole this is written
+      # to avoid. Bump it (with a note of why) whenever tests are
+      # legitimately added; a bump is a normal, visible diff. A drop below
+      # 232 should never happen without this line changing first.
+      - name: Run tests (with pass-count assertion)
+        run: |
+          node --import ./tests/hooks.mjs --test --test-reporter=tap "tests/*.test.mjs" | tee test-output.tap
+          PASS=$(grep -m1 '^# pass ' test-output.tap | awk '{print $3}')
+          FAIL=$(grep -m1 '^# fail ' test-output.tap | awk '{print $3}')
+          SKIPPED=$(grep -m1 '^# skipped ' test-output.tap | awk '{print $3}')
+          echo "pass=$PASS fail=$FAIL skipped=$SKIPPED"
+          FLOOR=232
+          if [ -z "$PASS" ] || [ "$PASS" -lt "$FLOOR" ]; then
+            echo "$PASS (or unreadable) passing tests, below the floor of $FLOOR measured 2026-09-19 on a clean build. Either the test glob matched fewer files than it should (the anchor-task silent-green shape: exit 0 no matter how many tests actually ran), or a real test was removed — either way this must be understood, not silenced, before pushing." >&2
+            exit 1
+          fi
+          if [ "$FAIL" -ne 0 ]; then
+            echo "$FAIL failing test(s) — see TAP output above." >&2
+            exit 1
+          fi
+
+      # --- Positive assertion on the actual tarball contents. ---
+      # Measured 2026-09-19 on a `git archive HEAD` copy with no dist/ built:
+      # `npm pack --dry-run` prints "total files: 3" (CHANGELOG.md,
+      # README.md, package.json — README.md ships even though `files:` here
+      # does not list it, because npm auto-attaches a README* it finds on
+      # disk), exits 0, no warning. That is this package's shape of the
+      # "one tarball, N files" failure the task is named after, and nothing
+      # above this line would have caught it. Self-check performed: this
+      # script goes RED on that unbuilt tree and GREEN after the build step
+      # above (141 files) — see ## Kết quả.
+      - name: Assert tarball contents (dist present, entry points present, src/tests/bench absent)
+        run: node scripts/check-tarball.mjs
+
+      # --- Dry-run only: mint an OIDC token for the exact audience npm asks
+      # for, and print ONLY five named claims — never the token, never the
+      # header or signature. Answers "what identity is this runner about to
+      # present to npm", checkable against the four fields on npmjs.com
+      # Settings → Trusted publishing BEFORE any tag is pushed.
+      - name: Print OIDC claims for comparison against npm Trusted Publisher settings (dry-run only)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
+        run: |
+          set -euo pipefail
+          RESPONSE=$(curl -sS -f -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=npm:registry.npmjs.org")
+          node -e '
+            const { value } = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const payload = value.split(".")[1];
+            const b64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+            const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4));
+            const claims = JSON.parse(Buffer.from(b64 + pad, "base64").toString("utf8"));
+            const wanted = ["repository", "repository_owner", "workflow_ref", "environment", "sub"];
+            console.log("OIDC claims this run presents to npm — compare against the four fields under npmjs.com Settings -> Trusted publishing:");
+            for (const key of wanted) {
+              console.log(`  ${key}: ${JSON.stringify(claims[key] ?? null)}`);
+            }
+            // Deliberately not printing header, signature, or the raw token.
+          ' <<< "$RESPONSE"
+
+      # --- Dry-run rehearsal of the real publish command. ---
+      # `npm publish --dry-run` does not authenticate at all (measured on
+      # ecosy-anchor, task 0062, and that mechanism does not depend on which
+      # package or version is involved: an empty $HOME against an
+      # unpublished version still exits 0, printing only "This command
+      # requires you to be logged in ... (dry-run)", never ENEEDAUTH). So
+      # this step can never confirm or deny whether Trusted Publisher/OIDC
+      # is configured correctly, on any version — only a real publish can.
+      # What it DOES still catch here: packaging problems (check-tarball.mjs
+      # above already covers that more precisely) and command-shape mistakes
+      # such as a missing --tag on a prerelease version.
+      - name: Publish rehearsal (dry-run)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          case "$VERSION" in
+            *-*) TAG_ARGS="--tag next" ;;
+            *) TAG_ARGS="" ;;
+          esac
+          set +e
+          OUTPUT=$(npm publish --dry-run --ignore-scripts --provenance --access public $TAG_ARGS 2>&1)
+          STATUS=$?
+          echo "$OUTPUT"
+          set -e
+          if [ "$STATUS" -eq 0 ]; then
+            echo "publish rehearsal: dry-run succeeded."
+            exit 0
+          fi
+          if echo "$OUTPUT" | grep -q "You cannot publish over the previously published versions"; then
+            echo "publish rehearsal: package.json version $VERSION is already on npm, so this rehearsal cannot get past a public, unauthenticated registry check. npm publish --dry-run never authenticates, so this rehearsal cannot confirm or deny whether Trusted Publisher / OIDC is set up correctly, on this version or any other."
+            exit 0
+          fi
+          echo "publish rehearsal: FAILED for a reason other than 'already published' — read the output above. This is a command-shape or packaging problem (e.g. a missing --tag, an invalid name), NOT a check of OIDC/Trusted Publisher correctness — dry-run never authenticates." >&2
+          exit "$STATUS"
+
+      # --- The real publish. Only on an actual tag push (never on
+      # workflow_dispatch, whatever ref is chosen for it) — this is the one
+      # line in this file that reaches the registry for real.
+      #
+      # --ignore-scripts is deliberate, not a workaround: build and test
+      # already ran as explicit steps above, on disk, before this line.
+      # Measured 2026-09-19: with dist/ already built, `npm publish
+      # --ignore-scripts` and a bare `npm publish` (which re-runs
+      # `prepublishOnly`: `yarn clean && yarn build`) produce a
+      # byte-identical tarball — 141 files, same shasum
+      # (f1c6e89b0a0e8e530545bd7dfaa0c15ce375552b), same 103.4 kB package
+      # size. What --ignore-scripts buys is that `prepublishOnly` never
+      # executes silently as part of the publish step itself — every script
+      # that runs on this path is a named step in this file.
+      #
+      # --tag is REQUIRED for a prerelease version (npm >= 11 refuses it
+      # outright; older npm publishes it straight to 'latest' with no
+      # warning — the exact "hỏng im" this workflow's floor-check above
+      # already guards against for npm's own version, so this line matters
+      # even more once that floor is met). A normal version keeps npm's
+      # default ('latest').
+      - name: Publish
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          case "$VERSION" in
+            *-*)
+              echo "publishing prerelease $VERSION under dist-tag 'next' (a prerelease with no --tag is refused by npm >= 11.x, and silently published to 'latest' by older npm — neither is acceptable here)"
+              npm publish --ignore-scripts --provenance --access public --tag next
+              ;;
+            *)
+              npm publish --ignore-scripts --provenance --access public
+              ;;
+          esac
+
+      # --- Provenance is a claim about what the registry did with the
+      # upload, not about what the CLI's exit code says. Read it back.
+      # Field shape confirmed 2026-09-19 by reading a real published package
+      # with provenance (`npm view @actions/core --json`):
+      #   dist.attestations = { url: "...", provenance: { predicateType: "..." } }
+      # `npm view @ecosy/next --json` today has NO `attestations` key under
+      # `dist` on the published 1.1.0 — confirming that version was
+      # published without it.
+      - name: Assert provenance attestation is present on the registry
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          node -e '
+            const { execSync } = require("child_process");
+            const pkg = require("./package.json");
+            const version = process.argv[1];
+            const json = execSync(`npm view ${pkg.name}@${version} --json`, { encoding: "utf8" });
+            const data = JSON.parse(json);
+            const attestations = data.dist && data.dist.attestations;
+            console.log("dist.attestations:", JSON.stringify(attestations));
+            if (!attestations || !attestations.url) {
+              console.error(`${pkg.name}@${version} has no dist.attestations.url on the registry — provenance was NOT recorded, even though publish succeeded.`);
+              process.exit(1);
+            }
+          ' "$VERSION"
