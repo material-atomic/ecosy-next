@@ -20,6 +20,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { surfaceOf } from "./support/surface.mjs";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const changelogPath = join(repoRoot, "CHANGELOG.md");
@@ -64,29 +65,6 @@ function sectionOf(md, version) {
   const nextRe = /^## /m;
   const nextMatch = nextRe.exec(rest);
   return nextMatch ? rest.slice(0, nextMatch.index) : rest;
-}
-
-/** Read the public surface of a built package: every name any root-entry
- *  module actually `export`s. Walks `dist/index.d.ts`'s `export * from`
- *  lines, then every declaration each of those `.d.ts` files itself
- *  `export`s — `container.d.ts`, `request-id.d.ts`, `request-store.d.ts`
- *  live in `dist/` but are never re-exported from the root, so they must
- *  never be walked here. */
-function surfaceOf(dir) {
-  const indexDts = readFileSync(join(dir, "index.d.ts"), "utf8");
-  const moduleRe = /^export \* from ["']\.\/([^"']+)["'];?\s*$/gm;
-  const modules = [];
-  let mm;
-  while ((mm = moduleRe.exec(indexDts))) modules.push(mm[1]);
-
-  const declRe = /^export\s+(?:declare\s+)?(?:interface|type|enum|class|function|const|let|var)\s+([A-Za-z_$][\w$]*)/gm;
-  const names = new Set();
-  for (const mod of modules) {
-    const content = readFileSync(join(dir, `${mod}.d.ts`), "utf8");
-    let dm;
-    while ((dm = declRe.exec(content))) names.add(dm[1]);
-  }
-  return { modules, names };
 }
 
 /** Text strictly between `<!-- surface:NAME -->` and `<!-- /surface:NAME -->`.

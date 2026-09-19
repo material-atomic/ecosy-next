@@ -26,6 +26,7 @@
     }
   },
   "license": "MIT",
+  "homepage": "https://docs.ecosy.io/next",
   "scripts": {
     "build": "tsc && rollup -c",
     "test": "yarn build && yarn test:run",
